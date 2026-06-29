@@ -7,9 +7,15 @@ const hdf5 = @cImport({
 pub const ParseError = error {
     MalformedFileName,
     UnknownFormat,
+    MissingAttribute,
+    MissingMarker,
+    ShapeMismatch,
+    ChannelMismatch,
+    UnsupportedChannel,
 };
 
 pub const Run = struct {
+    path: []const u8,
     num: []const u8,
     name: []const u8,
     date: []const u8,
@@ -43,9 +49,97 @@ pub const H5File = struct {
     }
 };
 
-pub fn parseFileName(basename: []const u8) ParseError!Run {
-    const stem = std.fs.path.stem(basename);
-    const ext = std.fs.path.extension(basename);
+pub fn parseAsciiChannel(run: Run, io: std.Io, allocator: std.mem.Allocator) !void {
+    // Try to open the data file
+    const file = try std.Io.Dir.cwd().openFile(io, run.path, .{.mode=.read_only});
+
+    // Initialize the reader
+    var read_buffer: [4096]u8 = undefined;
+    var reader = file.readerStreaming(io, &read_buffer);
+
+    // Get the channel name
+    const name = try reader.interface.takeDelimiter('\n');
+    if (!std.mem.startsWith(u8, name.?, "# Name: ")) return ParseError.MissingAttribute;
+    if (!std.mem.eql(u8, name.?, run.channel)) return ParseError.ChannelMismatch;
+
+    // Get the hint
+    const hint = try reader.interface.takeDelimiter('\n');
+    if (!std.mem.startsWith(u8, hint.?, "# Hint: ")) return ParseError.MissingAttribute;
+
+    // Get the frequency
+    const freq = try reader.interface.takeDelimiter('\n');
+    if (!std.mem.startsWith(u8, freq.?, "# Frequency: ")) return ParseError.MissingAttribute;
+    if (!std.mem.startsWith(u8, freq.?[12..], "continuous")) return ParseError.UnsupportedChannel;
+
+    // Get the shape
+    const shape_str = try reader.interface.takeDelimiter('\n');
+    if (!std.mem.startsWith(u8, shape_str.?, "# Shape: ")) return ParseError.MissingAttribute;
+    const shape = try std.fmt.parseInt(u32, shape_str.?[9..], 10);
+
+    if (shape == 0) {
+        return parseAscii1d(run, reader.interface, allocator);
+    } else {
+        return parseAscii1d(run, reader.interface, allocator);
+    }
+    // var it = std.mem.splitScalar(u8, line, '\t');
+}
+
+fn parseAscii1d(run: Run, reader: std.Io.Reader, allocator: std.mem.Allocator) ParseError!void {
+     var data: std.ArrayList(f64) = .empty;
+     defer data.deinit(allocator);
+
+    // Get the first scan marker
+    var line = try reader.takeDelimiter('\n');
+    if (!std.mem.startsWith(u8, line.?, "# SCAN ")) return ParseError.MissingMarker;
+    var scan_marker = line.?[7..];
+
+    // Get the first step marker
+    line = try reader.takeDelimiter('\n');
+    if (!std.mem.startsWith(u8, line.?, "# STEP 0: ")) return ParseError.MissingMarker;
+    var step_marker = line.?[10..];
+
+    std.log.info("  writing channel: {s}", .{run.channel});
+
+    while (true) {
+        line = try reader.takeDelimiter('\n');
+
+        // Try parse value
+        if (std.fmt.parseFloat(f64, line.?)) |val| {
+            try data.append(allocator, val);
+            continue;
+        }
+
+        // Write dataset to hdf5
+
+        // Clear data
+
+        // Are we at EOF?
+        if (line == null) break;
+
+        // Is it a scan marker?
+        if (std.mem.startsWith(u8, line.?, "# SCAN ")) {
+            scan_marker = line.?[7..];
+            std.log.info("    scan: {s}", .{scan_marker});
+            line = try reader.takeDelimiter('\n');
+        }
+
+        // Is it a step marker?
+        if (std.mem.startsWith(u8, line.?, "# STEP ")) {
+            const idx = std.mem.find(u8, line.?, ':');
+            if (idx == null) return ParseError.MissingMarker;
+            step_marker = line.?[idx.?+2..];
+            std.log.info("    step: {s}", .{step_marker});
+            continue;
+        }
+
+        // Ahh shibal... something is wrong...
+        return ParseError.MissingMarker;
+    }
+}
+
+pub fn parseFileName(path: []const u8) ParseError!Run {
+    const stem = std.fs.path.stem(path);
+    const ext = std.fs.path.extension(path);
 
     // Split the filename into segments for parsing
     var it = std.mem.splitScalar(u8, stem, '_');
@@ -77,6 +171,7 @@ pub fn parseFileName(basename: []const u8) ParseError!Run {
     const format = try FileFormat.parse(ext);
 
     return .{
+        .path = path,
         .num = num,
         .name = name,
         .date = date,

@@ -82,5 +82,9 @@ pub fn main(init: std.process.Init) !void {
         const c_path = try arena.dupeSentinel(u8, filepath, 0);
 
         try hdf5_file.open(c_path);
+        // const input_file = try dir.openFile(io, entry.path, .{.mode=.read_only});
+        // defer input_file.close(io);
+
+        try metro.parseAsciiChannel(run, io, arena);
     }
 }
