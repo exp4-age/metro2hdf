@@ -66,25 +66,20 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("found: {s}", .{entry.basename});
 
         // Parse the file name and skip if it fails
-        const run = metro.parseFileName(entry.basename) catch |err| {
+        const run = metro.parseFileName(entry.path) catch |err| {
             std.log.info("  skipping: {s}", .{@errorName(err)});
             continue;
         };
-
-        std.log.info("  num: {s}", .{run.num});
-        std.log.info("  name: {s}", .{run.name});
-        std.log.info("  date: {s}-{s}-{s}", .{run.date[0..2], run.date[2..4], run.date[4..8]});
-        std.log.info("  time: {s}:{s}:{s}", .{run.time[0..2], run.time[2..4], run.time[4..6]});
-        std.log.info("  channel: {s}", .{run.channel});
 
         const filename = try std.fmt.allocPrint(arena, "{s}_{s}.h5", .{run.num, run.name});
         const filepath = try std.fs.path.resolve(arena, &[_][]const u8{output_dir, filename});
         const c_path = try arena.dupeSentinel(u8, filepath, 0);
 
         try hdf5_file.open(c_path);
+        try hdf5_file.write_attrs(run);
         // const input_file = try dir.openFile(io, entry.path, .{.mode=.read_only});
         // defer input_file.close(io);
 
-        try metro.parseAsciiChannel(run, io, arena);
+        try metro.parseAsciiChannel(run, dir, io, arena);
     }
 }

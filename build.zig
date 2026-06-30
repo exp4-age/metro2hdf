@@ -14,6 +14,11 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .target = target,
     });
+    mod.addIncludePath(b.path("src"));
+    mod.addCSourceFile(.{
+        .file = b.path("src/hdf5shim.c"),
+        .flags = &.{"-std=c11"},
+    });
     mod.linkSystemLibrary("hdf5", .{});
 
     const exe = b.addExecutable(.{
