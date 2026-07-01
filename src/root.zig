@@ -79,10 +79,10 @@ pub const H5File = struct {
         if (lcpl < 0) return H5Error.H5I_INVALID_HID;
         defer _ = hdf5.H5Pclose(lcpl);
 
-        // create intermediate groups as needed
+        // Create intermediate groups as needed
         if (hdf5.H5Pset_create_intermediate_group(lcpl, 1) < 0) return H5Error.H5I_INVALID_HID;
 
-        // create a 1D dataspace
+        // Create a 1D dataspace
         var rank: c_int = undefined;
         var dims_1d: [1]hdf5.hsize_t = undefined;
         var dims_2d: [2]hdf5.hsize_t = undefined;
@@ -97,29 +97,23 @@ pub const H5File = struct {
             dims_2d[0] = @intCast(rows);
             dims_2d[1] = @intCast(shape);
         }
-
         const fspace = if (rank == 1)
             hdf5.H5Screate_simple(rank, &dims_1d, null)
         else
             hdf5.H5Screate_simple(rank, &dims_2d, null);
-
         if (fspace < 0) return H5Error.H5I_INVALID_HID;
         defer _ = hdf5.H5Sclose(fspace);
 
+        // Define the datatype
+        const type_id = hdf5.shim_H5T_IEEE_F64LE();
+
         // Create the dataset
-        const dset = hdf5.H5Dcreate2(self.id, name, hdf5.zig_h5t_f64(), fspace, lcpl, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+        const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, lcpl, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
         if (dset < 0) return H5Error.H5I_INVALID_HID;
         defer _ = hdf5.H5Dclose(dset);
 
-        // Write dataset
-        if (hdf5.H5Dwrite(
-            dset,
-            hdf5.zig_h5t_f64(),
-            hdf5.H5S_ALL,
-            hdf5.H5S_ALL,
-            hdf5.H5P_DEFAULT,
-            data.ptr,
-        ) < 0) return H5Error.WriteFailed;
+        // Write the dataset
+        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) return H5Error.WriteFailed;
     }
 
     pub fn write_attrs(self: *@This(), run: Run) !void {
@@ -149,7 +143,7 @@ pub const H5File = struct {
         // Fail if the file is not open
         if (self.id < 0) return H5Error.FileNotOpen;
 
-        const str_t = hdf5.H5Tcopy(hdf5.zig_h5t_string());
+        const str_t = hdf5.H5Tcopy(hdf5.shim_H5T_C_S1());
         if (str_t < 0) return H5Error.H5I_INVALID_HID;
         defer _ = hdf5.H5Tclose(str_t);
 
@@ -302,7 +296,6 @@ pub fn parseAsciiChannel(dir: std.Io.Dir, run: Run, h5f: *H5File, io: std.Io, al
             @memcpy(scan_marker[0..line.?.len], line.?);
             scan_idx = scan_marker[7..line.?.len];
             step_val = null;
-            std.log.info("    scan: {s}", .{scan_idx.?});
 
             // Already get next line (should be the step marker)
             line = try reader.interface.takeDelimiter('\n');
@@ -323,7 +316,6 @@ pub fn parseAsciiChannel(dir: std.Io.Dir, run: Run, h5f: *H5File, io: std.Io, al
             if (std.mem.find(u8, line.?, ":")) |idx| {
                 @memcpy(step_marker[0..line.?.len], line.?);
                 step_val = step_marker[idx+2..line.?.len];
-                std.log.info("    step: {s}", .{step_val.?});
             } else return ParseError.MissingMarker;
         }
 
