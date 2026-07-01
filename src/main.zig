@@ -81,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Check if a different channel was already processed for this run
         if (hash == last_run) {
-            try metro.parseAsciiChannel(run, &hdf5_file, dir, io, arena);
+            metro.parseChannel(dir, run, &hdf5_file, io, arena);
             continue;
         }
 
@@ -89,7 +89,7 @@ pub fn main(init: std.process.Init) !void {
         if (run_table.get(hash)) |hdf5_path| {
             last_run = hash;
             try hdf5_file.open(hdf5_path);
-            try metro.parseAsciiChannel(run, &hdf5_file, dir, io, arena);
+            metro.parseChannel(dir, run, &hdf5_file, io, arena);
             continue;
         }
 
@@ -120,6 +120,6 @@ pub fn main(init: std.process.Init) !void {
         try hdf5_file.write_attrs(run);
 
         // Parse and write the data
-        try metro.parseAsciiChannel(run, &hdf5_file, dir, io, arena);
+        metro.parseChannel(dir, run, &hdf5_file, io, arena);
     }
 }
