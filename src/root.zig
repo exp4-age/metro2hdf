@@ -35,16 +35,67 @@ pub const H5File = struct {
     id: hdf5.hid_t = -1,
     path: []const u8 = "",
 
+    pub fn create(self: *@This(), path: [:0]const u8) !void {
+        if (self.id >= 0) self.close();
+        self.id = hdf5.H5Fcreate(path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+        self.path = path;
+        if (self.id < 0) return H5Error.H5I_INVALID_HID;
+    }
+
     pub fn open(self: *@This(), path: [:0]const u8) !void {
         if (self.id >= 0 and std.mem.eql(u8, path, self.path)) return; // already open
         if (self.id >= 0) self.close();
-        var id = hdf5.H5Fopen(path.ptr, hdf5.H5F_ACC_RDWR, hdf5.H5P_DEFAULT);
-        if (id < 0) {
-            id = hdf5.H5Fcreate(path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
-        }
-        self.id = id;
+        self.id = hdf5.H5Fopen(path.ptr, hdf5.H5F_ACC_RDWR, hdf5.H5P_DEFAULT);
         self.path = path;
-        if (id < 0) return H5Error.OpenFailed;
+        if (self.id < 0) return H5Error.H5I_INVALID_HID;
+    }
+
+    pub fn close(self: *@This()) void {
+        if (self.id >= 0) {
+            _ = hdf5.H5Fclose(self.id);
+            self.id = -1;
+            self.path = "";
+        }
+    }
+
+    pub fn write_dset(self: *@This(), scan_idx: []const u8, step_val: []const u8, channel: []const u8, data: []const f64) !void {
+        // Fail if the file is not open
+        if (self.id < 0) return H5Error.FileNotOpen;
+
+        // Create path to dataset
+        var buf: [1024]u8 = undefined;
+        const name = try std.fmt.bufPrintSentinel(&buf, "{s}/{s}/{s}", .{scan_idx, step_val, channel}, 0);
+
+        // Create link creation property list
+        const lcpl = hdf5.H5Pcreate(hdf5.shim_H5P_LINK_CREATE());
+        if (lcpl < 0) return H5Error.H5I_INVALID_HID;
+        defer _ = hdf5.H5Pclose(lcpl);
+
+        // use UTF-8 encoding for link names
+        // if (hdf5.H5Pset_char_encoding(lcpl, hdf5.H5T_CSET_UTF8) < 0) return H5Error.H5I_INVALID_HID;
+        // create intermediate groups as needed
+        if (hdf5.H5Pset_create_intermediate_group(lcpl, 1) < 0) return H5Error.H5I_INVALID_HID;
+
+        // create a 1D dataspace
+        const dims = [_]hdf5.hsize_t{@intCast(data.len)};
+        const fspace = hdf5.H5Screate_simple(1, &dims, null);
+        if (fspace < 0) return H5Error.H5I_INVALID_HID;
+        defer _ = hdf5.H5Sclose(fspace);
+
+        // Create the dataset
+        const dset = hdf5.H5Dcreate2(self.id, name, hdf5.zig_h5t_f64(), fspace, lcpl, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+        if (dset < 0) return H5Error.H5I_INVALID_HID;
+        defer _ = hdf5.H5Dclose(dset);
+
+        // Write dataset
+        if (hdf5.H5Dwrite(
+            dset,
+            hdf5.zig_h5t_f64(),
+            hdf5.H5S_ALL,
+            hdf5.H5S_ALL,
+            hdf5.H5P_DEFAULT,
+            data.ptr,
+        ) < 0) return H5Error.WriteFailed;
     }
 
     pub fn write_attrs(self: *@This(), run: Run) !void {
@@ -111,22 +162,15 @@ pub const H5File = struct {
         // Write attribute
         if (hdf5.H5Awrite(attr, str_t, buf) < 0) return H5Error.WriteFailed;
     }
-
-    pub fn close(self: *@This()) void {
-        if (self.id >= 0) {
-            _ = hdf5.H5Fclose(self.id);
-            self.id = -1;
-            self.path = "";
-        }
-    }
 };
 
-pub fn parseAsciiChannel(run: Run, dir: std.Io.Dir, io: std.Io, allocator: std.mem.Allocator) !void {
+pub fn parseAsciiChannel(run: Run, h5f: *H5File, dir: std.Io.Dir, io: std.Io, allocator: std.mem.Allocator) !void {
     // Try to open the data file
     const file = try dir.openFile(io, run.path, .{.mode=.read_only});
 
     // Initialize the reader
-    var read_buffer: [4096]u8 = undefined;
+    const buf_size = 4096;
+    var read_buffer: [buf_size]u8 = undefined;
     var reader = file.readerStreaming(io, &read_buffer);
 
     // Get the channel name
@@ -150,41 +194,57 @@ pub fn parseAsciiChannel(run: Run, dir: std.Io.Dir, io: std.Io, allocator: std.m
     if (!std.mem.startsWith(u8, shape_str.?, "# Shape: ")) return ParseError.MissingAttribute;
     const shape = try std.fmt.parseInt(u32, shape_str.?[9..], 10);
 
-    var scan_marker: ?[]u8 = null;
-    var step_marker: ?[]u8 = null;
+    // Keep track of scan and step markers in the file
+    var scan_marker: [buf_size]u8 = undefined;
+    var scan_idx: ?[]u8 = null;
+    var step_marker: [buf_size]u8 = undefined;
+    var step_val: ?[]u8 = null;
 
     if (shape == 0) {
+        // Store read data in an array list
         var data: std.ArrayList(f64) = .empty;
         defer data.deinit(allocator);
 
+        // Start with reasonable capacity
+        try data.ensureTotalCapacity(allocator, 4096);
+
         while (true) {
+            // Read the next line
             var line = try reader.interface.takeDelimiter('\n');
 
             // Are we at EOF?
             if (line == null) {
                 // Write dataset to hdf5
+                if (step_val != null and data.items.len > 0) {
+                    try h5f.write_dset(scan_idx.?, step_val.?, run.channel, data.items);
+                    data.clearRetainingCapacity();
+                }
                 break;
             }
 
             // Try parse as value first
-            const val = std.fmt.parseFloat(f64, line.?) catch null;
-            if (val != null) {
+            if (std.fmt.parseFloat(f64, line.?)) |val| {
                 // Only append data if it belongs to a step
-                if (step_marker == null) continue;
+                if (step_val == null) continue;
 
                 // Append data and continue to next line
-                try data.append(allocator, val.?);
+                try data.append(allocator, val);
                 continue;
-            }
+            } else |_| {}
 
             // Is it a scan marker?
             if (std.mem.startsWith(u8, line.?, "# SCAN ")) {
                 // Write dataset to hdf5 before continuing with next scan
+                if (step_val != null and data.items.len > 0) {
+                    try h5f.write_dset(scan_idx.?, step_val.?, run.channel, data.items);
+                    data.clearRetainingCapacity();
+                }
 
                 // Update scan index and reset step marker
-                scan_marker = line.?[7..];
-                step_marker = null;
-                std.log.info("    scan: {s}", .{scan_marker.?});
+                @memcpy(scan_marker[0..line.?.len], line.?);
+                scan_idx = scan_marker[7..line.?.len];
+                step_val = null;
+                std.log.info("    scan: {s}", .{scan_idx.?});
 
                 // Already get next line (should be the step marker)
                 line = try reader.interface.takeDelimiter('\n');
@@ -193,15 +253,20 @@ pub fn parseAsciiChannel(run: Run, dir: std.Io.Dir, io: std.Io, allocator: std.m
             // Is it a step marker?
             if (std.mem.startsWith(u8, line.?, "# STEP ")) {
                 // Step marker should never come without a scan marker
-                if (scan_marker == null) return ParseError.MissingMarker;
+                if (scan_idx == null) return ParseError.MissingMarker;
 
                 // Write dataset to hdf5 before continuing with next step
+                if (step_val != null and data.items.len > 0) {
+                    try h5f.write_dset(scan_idx.?, step_val.?, run.channel, data.items);
+                    data.clearRetainingCapacity();
+                }
 
                 // Find start of step value in line and update
-                const idx = std.mem.find(u8, line.?, ":");
-                if (idx == null) return ParseError.MissingMarker;
-                step_marker = line.?[idx.?+2..];
-                std.log.info("    step: {s}", .{step_marker.?});
+                if (std.mem.find(u8, line.?, ":")) |idx| {
+                    @memcpy(step_marker[0..line.?.len], line.?);
+                    step_val = step_marker[idx+2..line.?.len];
+                    std.log.info("    step: {s}", .{step_val.?});
+                } else return ParseError.MissingMarker;
             }
 
             // Ahh shibal... something is wrong, try next line...
@@ -254,6 +319,15 @@ pub fn parseFileName(path: []const u8) ParseError!Run {
         .channel = channel,
         .format = format,
     };
+}
+
+pub fn runHash(run: Run) u64 {
+    var hash = std.hash.Wyhash.init(42);
+    hash.update(run.num);
+    hash.update(run.name);
+    hash.update(run.date);
+    hash.update(run.time);
+    return hash.final();
 }
 
 const FileFormat = enum {

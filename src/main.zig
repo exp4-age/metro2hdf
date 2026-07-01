@@ -50,6 +50,11 @@ pub fn main(init: std.process.Init) !void {
     std.log.info("saving files to: {s}", .{output_dir});
     defer out_dir.close(io);
 
+    // Keep track of already touched files
+    var run_table = std.AutoHashMap(u64, [:0]const u8).init(arena);
+    defer run_table.deinit();
+    var last_run: u64 = undefined;
+
     // Create an HDF5 file manager
     var hdf5_file = metro.H5File{};
     defer hdf5_file.close();
@@ -71,15 +76,50 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
 
+        // Create hash with run info
+        const hash = metro.runHash(run);
+
+        // Check if a different channel was already processed for this run
+        if (hash == last_run) {
+            try metro.parseAsciiChannel(run, &hdf5_file, dir, io, arena);
+            continue;
+        }
+
+        // Open already created hdf5 file
+        if (run_table.get(hash)) |hdf5_path| {
+            last_run = hash;
+            try hdf5_file.open(hdf5_path);
+            try metro.parseAsciiChannel(run, &hdf5_file, dir, io, arena);
+            continue;
+        }
+
+        // Construct path for the hdf5 file
         const filename = try std.fmt.allocPrint(arena, "{s}_{s}.h5", .{run.num, run.name});
         const filepath = try std.fs.path.resolve(arena, &[_][]const u8{output_dir, filename});
-        const c_path = try arena.dupeSentinel(u8, filepath, 0);
 
-        try hdf5_file.open(c_path);
+        // Check if the file already exists
+        if (out_dir.access(io, filename, .{.read=true, .write=true})) {
+            if (!replace) {
+                std.log.info("  skipping: hdf5 file already exists", .{});
+                continue;
+            }
+            try out_dir.deleteFile(io, filename);
+        } else |_| {}
+
+        // Add null termination for hdf5
+        const hdf5_path = try arena.dupeSentinel(u8, filepath, 0);
+
+        // Update run table and last opened run
+        try run_table.putNoClobber(hash, hdf5_path);
+        last_run = hash;
+
+        // Create a new hdf5 file
+        try hdf5_file.create(hdf5_path);
+
+        // Write run attributes into the root group
         try hdf5_file.write_attrs(run);
-        // const input_file = try dir.openFile(io, entry.path, .{.mode=.read_only});
-        // defer input_file.close(io);
 
-        try metro.parseAsciiChannel(run, dir, io, arena);
+        // Parse and write the data
+        try metro.parseAsciiChannel(run, &hdf5_file, dir, io, arena);
     }
 }
