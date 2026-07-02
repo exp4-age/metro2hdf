@@ -1,4 +1,4 @@
-#include "hdf5shim.h"
+#include "h5types.h"
 hid_t shim_H5T_IEEE_F64LE(void) { return H5T_IEEE_F64LE; }
 hid_t shim_H5T_C_S1(void) { return H5T_C_S1; }
 hid_t shim_H5P_LINK_CREATE(void) { return H5P_LINK_CREATE; }

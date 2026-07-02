@@ -1,8 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 
-const glob = @import("glob");
-const metro = @import("metro");
+const glob = @import("glob.zig");
+const metro = @import("metro.zig");
+const hdf5 = @import("hdf5.zig");
 
 const UsageError = error {
     MissingValue,
@@ -56,7 +57,7 @@ pub fn main(init: std.process.Init) !void {
     var last_run: u64 = undefined;
 
     // Create an HDF5 file manager
-    var hdf5_file = metro.H5File{};
+    var hdf5_file = hdf5.File{};
     defer hdf5_file.close();
 
     var walker = try Io.Dir.walk(dir, arena);
@@ -76,12 +77,16 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
 
+        // Try to open the data file
+        var file = try dir.openFile(io, entry.path, .{.mode=.read_only});
+        defer file.close(io);
+
         // Create hash with run info
         const hash = metro.runHash(run);
 
         // Check if a different channel was already processed for this run
         if (hash == last_run) {
-            metro.parseChannel(dir, run, &hdf5_file, io, arena);
+            metro.parseChannel(run, &file, &hdf5_file, io, arena);
             continue;
         }
 
@@ -89,7 +94,7 @@ pub fn main(init: std.process.Init) !void {
         if (run_table.get(hash)) |hdf5_path| {
             last_run = hash;
             try hdf5_file.open(hdf5_path);
-            metro.parseChannel(dir, run, &hdf5_file, io, arena);
+            metro.parseChannel(run, &file, &hdf5_file, io, arena);
             continue;
         }
 
@@ -120,6 +125,6 @@ pub fn main(init: std.process.Init) !void {
         try hdf5_file.write_attrs(run);
 
         // Parse and write the data
-        metro.parseChannel(dir, run, &hdf5_file, io, arena);
+        metro.parseChannel(run, &file, &hdf5_file, io, arena);
     }
 }
