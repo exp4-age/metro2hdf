@@ -5,6 +5,34 @@ const glob = @import("glob.zig");
 const metro = @import("metro.zig");
 const hdf5 = @import("hdf5.zig");
 
+const usage =
+    \\Usage: metro2hdf [OPTIONS]...
+    \\
+    \\  -o, --output-dir DIR            write hdf5 files into the specified
+    \\                                  directory (default: ".")
+    \\      --glob GLOB                 glob string for selecting metro run
+    \\                                  files (default: "*")
+    \\      --replace                   overwrite existing files
+    \\      --help                      show this help and exit
+    \\
+    \\HDF5 OPTIONS
+    \\      --compress [LEVEL]          use gzip compression with optionally
+    \\                                  specified level (default: 4)
+    \\
+    \\HPTDC OPTIONS
+    \\      --hptdc-chunk-size SIZE     number of data elements to read,
+    \\                                  convert and store at a time
+    \\                                  (default: 1e5)
+    \\      --hptdc-ignore-tables       ignore scan and step tables in the
+    \\                                  TDC file and rebuild them by
+    \\                                  searching for the markers
+    \\      --hptdc-decode-words        decode words generated in certain
+    \\                                  operation modes (4 bytes per word)
+    \\                                  into its type and argument
+    \\                                  (8 bytes per word)
+    \\
+;
+
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
     const io = init.io;
@@ -13,26 +41,44 @@ pub fn main(init: std.process.Init) !void {
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
     const stdout_writer = &stdout_file_writer.interface;
 
-    try stdout_writer.print("metro2hdf\n", .{});
-    try stdout_writer.flush();
-
     // Default options for metro2hdf:
     var pattern: []const u8 = "*";
     var output_dir: []const u8 = ".";
     var replace = false;
 
-    // Accessing command line arguments:
+    // Parse command line arguments
     var args = try init.minimal.args.iterateAllocator(arena);
     defer args.deinit();
 
+    // Skip program name
+    _ = args.next();
+
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--glob")) {
-            pattern = args.next() orelse return error.UsageError;
-        } else if (std.mem.eql(u8, arg, "--output-dir")) {
-            output_dir = args.next() orelse return error.UsageError;
+            if (args.next()) |val| {
+                pattern = val;
+                continue;
+            }
+        } else if (std.mem.eql(u8, arg, "--output-dir") or std.mem.eql(u8, arg, "-o")) {
+            if (args.next()) |val| {
+                output_dir = val;
+                continue;
+            }
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
+            continue;
+        } else if (std.mem.eql(u8, arg, "--compress")) {
+            return error.NotImplemented;
+        } else if (std.mem.eql(u8, arg, "--hptdc-chunk-size")) {
+            return error.NotImplemented;
+        } else if (std.mem.eql(u8, arg, "--hptdc-ignore-tables")) {
+            return error.NotImplemented;
+        } else if (std.mem.eql(u8, arg, "--hptdc-decode-words")) {
+            return error.NotImplemented;
         }
+        try stdout_writer.printAscii(usage, .{});
+        try stdout_writer.flush();
+        return;
     }
 
     // Get current working directory for glob'ing
