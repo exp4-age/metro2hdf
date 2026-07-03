@@ -5,10 +5,6 @@ const glob = @import("glob.zig");
 const metro = @import("metro.zig");
 const hdf5 = @import("hdf5.zig");
 
-const UsageError = error {
-    MissingValue,
-};
-
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
     const io = init.io;
@@ -31,9 +27,9 @@ pub fn main(init: std.process.Init) !void {
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--glob")) {
-            pattern = args.next() orelse return UsageError.MissingValue;
+            pattern = args.next() orelse return error.UsageError;
         } else if (std.mem.eql(u8, arg, "--output-dir")) {
-            output_dir = args.next() orelse return UsageError.MissingValue;
+            output_dir = args.next() orelse return error.UsageError;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
         }
@@ -111,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
         defer h5f.close();
 
         // Write run attributes
-        h5f.write_attrs(run) catch {};
+        h5f.writeRootAttrs(run) catch {};
 
         // Iterate over all channels
         for (run.channels.items) |ch| {
