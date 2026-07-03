@@ -19,28 +19,19 @@ pub const H5Error = error {
 
 pub const File = struct {
     id: hdf5.hid_t = -1,
-    path: []const u8 = "",
 
-    pub fn create(self: *@This(), path: [:0]const u8) !void {
-        if (self.id >= 0) self.close();
-        self.id = hdf5.H5Fcreate(path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
-        self.path = path;
-        if (self.id < 0) return H5Error.H5I_INVALID_HID;
-    }
-
-    pub fn open(self: *@This(), path: [:0]const u8) !void {
-        if (self.id >= 0 and std.mem.eql(u8, path, self.path)) return; // already open
-        if (self.id >= 0) self.close();
-        self.id = hdf5.H5Fopen(path.ptr, hdf5.H5F_ACC_RDWR, hdf5.H5P_DEFAULT);
-        self.path = path;
-        if (self.id < 0) return H5Error.H5I_INVALID_HID;
+    pub fn create(path: [:0]const u8) !File {
+        const id: hdf5.hid_t = hdf5.H5Fcreate(
+            path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT
+        );
+        if (id < 0) return error.H5I_INVALID_HID;
+        return .{ .id = id };
     }
 
     pub fn close(self: *@This()) void {
         if (self.id >= 0) {
             _ = hdf5.H5Fclose(self.id);
             self.id = -1;
-            self.path = "";
         }
     }
 

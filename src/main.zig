@@ -52,13 +52,8 @@ pub fn main(init: std.process.Init) !void {
     defer out_dir.close(io);
 
     // Keep track of already touched files
-    var run_table = std.AutoHashMap(u64, [:0]const u8).init(arena);
+    var run_table = try metro.RunTable.init(arena);
     defer run_table.deinit();
-    var last_run: u64 = undefined;
-
-    // Create an HDF5 file manager
-    var hdf5_file = hdf5.File{};
-    defer hdf5_file.close();
 
     var walker = try Io.Dir.walk(dir, arena);
     defer walker.deinit();
@@ -69,62 +64,75 @@ pub fn main(init: std.process.Init) !void {
 
         // Skip if the path does not match the glob pattern
         if (!glob.globMatch(pattern, entry.path)) continue;
-        std.log.info("found: {s}", .{entry.basename});
+        // std.log.info("found: {s}", .{entry.basename});
 
         // Parse the file name and skip if it fails
-        const run = metro.parseFileName(entry.path) catch |err| {
-            std.log.info("  skipping: {s}", .{@errorName(err)});
+        run_table.addChannel(entry.path) catch |err| {
+            std.log.info("skipping {s}: {s}", .{entry.path, @errorName(err)});
             continue;
         };
 
-        // Try to open the data file
-        var file = try dir.openFile(io, entry.path, .{.mode=.read_only});
-        defer file.close(io);
+    }
 
-        // Create hash with run info
-        const hash = metro.runHash(run);
+    while (run_table.next()) |run| {
+        try stdout_writer.print("run {s}: ", .{run.num});
+        try stdout_writer.flush();
 
-        // Check if a different channel was already processed for this run
-        if (hash == last_run) {
-            metro.parseChannel(run, &file, &hdf5_file, io, arena);
-            continue;
-        }
-
-        // Open already created hdf5 file
-        if (run_table.get(hash)) |hdf5_path| {
-            last_run = hash;
-            try hdf5_file.open(hdf5_path);
-            metro.parseChannel(run, &file, &hdf5_file, io, arena);
-            continue;
-        }
-
-        // Construct path for the hdf5 file
-        const filename = try std.fmt.allocPrint(arena, "{s}_{s}.h5", .{run.num, run.name});
+        // Construct name and path for the hdf5 file
+        const filename = try std.fmt.allocPrint(
+            arena, "{s}_{s}_{s}_{s}.h5", .{run.num, run.name, run.date, run.time}
+        );
         const filepath = try std.fs.path.resolve(arena, &[_][]const u8{output_dir, filename});
 
         // Check if the file already exists
         if (out_dir.access(io, filename, .{.read=true, .write=true})) {
             if (!replace) {
-                std.log.info("  skipping: hdf5 file already exists", .{});
+                std.log.info("skipping {s}: file already exists", .{filepath});
                 continue;
+            } else {
+                out_dir.deleteFile(io, filename) catch |err| {
+                    std.log.info("skipping {s}: {s}", .{filepath, @errorName(err)});
+                    continue;
+                };
             }
-            try out_dir.deleteFile(io, filename);
-        } else |_| {}
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => {
+                std.log.info("skipping {s}: {s}", .{filepath, @errorName(err)});
+            },
+        }
 
-        // Add null termination for hdf5
-        const hdf5_path = try arena.dupeSentinel(u8, filepath, 0);
+        // Create the output hdf5 file
+        const path = try arena.dupeSentinel(u8, filepath, 0);
+        var h5f = hdf5.File.create(path) catch |err| {
+            std.log.info("skipping {s}: {s}", .{filepath, @errorName(err)});
+            continue;
+        };
+        defer h5f.close();
 
-        // Update run table and last opened run
-        try run_table.putNoClobber(hash, hdf5_path);
-        last_run = hash;
+        // Write run attributes
+        h5f.write_attrs(run) catch {};
 
-        // Create a new hdf5 file
-        try hdf5_file.create(hdf5_path);
+        // Iterate over all channels
+        for (run.channels.items) |ch| {
+            // Update stdout to indicate the channel that is being processed
+            try stdout_writer.print("run {s}: {s}", .{run.num, ch.name});
+            try stdout_writer.flush();
 
-        // Write run attributes into the root group
-        try hdf5_file.write_attrs(run);
+            // Parse data and write to the hdf5 file
+            ch.parse(&h5f, io, arena) catch |err| {
+                try stdout_writer.printAscii("\r\x1b[2K", .{});
+                try stdout_writer.flush();
+                std.log.warn("skipping {s}: {s}", .{ch.name, @errorName(err)});
+                continue;
+            };
 
-        // Parse and write the data
-        metro.parseChannel(run, &file, &hdf5_file, io, arena);
+            // Reset stdout
+            try stdout_writer.printAscii("\r\x1b[2K", .{});
+            try stdout_writer.flush();
+        }
+
+        try stdout_writer.print("run {s}: done\n", .{run.num});
+        try stdout_writer.flush();
     }
 }

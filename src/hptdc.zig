@@ -22,14 +22,14 @@ const HptdcHit = packed struct {
 };
 
 pub fn parseChannel(
-    run: metro.Run,
+    ch: metro.Channel,
     file: *std.Io.File,
     h5f: *hdf5.File,
     io: std.Io,
     allocator: std.mem.Allocator,
 ) !void {
     _ = &h5f;
-    _ = &run;
+    _ = &ch;
 
     // Initialize the reader
     const buf_size = 4096;
@@ -48,7 +48,6 @@ pub fn parseChannel(
     if (header.size < 32) return HptdcError.BrokenHeader;
 
     const mode = try reader.interface.take(4);
-    std.log.info("  hptdc mode: {s}", .{mode});
 
     const Table = packed struct {
         offset: i64,
@@ -58,7 +57,6 @@ pub fn parseChannel(
     const scan_table = try reader.interface.takeStruct(Table, .little);
     if (scan_table.offset < header.size + 4) return HptdcError.BrokenHeader;
     const param_table = try reader.interface.takeStruct(Table, .little);
-    std.log.info("  param table size: {d}", .{param_table.size});
 
     // Skip additional header if present
     const remaining_header: usize = @intCast(header.size - 32);
@@ -91,9 +89,9 @@ pub fn parseChannel(
     } else |_| {}
 
     if (step_tables.items.len == 0) {
-        std.log.info("  rebuild step stable", .{});
+        // Rebuild step table
     } else {
-        std.log.info("  step stable ok", .{});
+        // Step table okay
     }
 
     const scan_marker = HptdcHit{
@@ -103,7 +101,6 @@ pub fn parseChannel(
         .bin = 0x0000,
         .align_ = 0,
     };
-    std.log.info(" scan marker time: {d}", .{scan_marker.channel});
     const step_marker = HptdcHit{
         .time = -1,
         .channel = 0xff,
@@ -111,7 +108,10 @@ pub fn parseChannel(
         .bin = 0x0000,
         .align_ = 0,
     };
-    std.log.info(" scan marker time: {d}", .{step_marker.type});
 
+    _ = &mode;
+    _ = &param_table;
+    _ = &scan_marker;
+    _ = &step_marker;
     return HptdcError.UnsupportedVersion;
 }

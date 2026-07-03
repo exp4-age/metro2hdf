@@ -3,7 +3,7 @@ const metro = @import("metro.zig");
 const hdf5 = @import("hdf5.zig");
 
 pub fn parseChannel(
-    run: metro.Run,
+    ch: metro.Channel,
     file: *std.Io.File,
     h5f: *hdf5.File,
     io: std.Io,
@@ -17,7 +17,7 @@ pub fn parseChannel(
     // Get the channel name
     const name = try reader.interface.takeDelimiter('\n');
     if (!std.mem.startsWith(u8, name.?, "# Name: ")) return error.MissingAttribute;
-    if (!std.mem.eql(u8, name.?[8..], run.channel)) return error.ChannelMismatch;
+    if (!std.mem.eql(u8, name.?[8..], ch.name)) return error.ChannelMismatch;
 
     // Get the hint
     const hint = try reader.interface.takeDelimiter('\n');
@@ -56,7 +56,7 @@ pub fn parseChannel(
         if (line == null) {
             // Write dataset to hdf5
             if (step_val != null and data.items.len > 0) {
-                try h5f.write_dset(scan_idx.?, step_val.?, run.channel, data.items, shape);
+                try h5f.write_dset(scan_idx.?, step_val.?, ch.name, data.items, shape);
                 data.clearRetainingCapacity();
             }
             break;
@@ -99,7 +99,7 @@ pub fn parseChannel(
         if (std.mem.startsWith(u8, line.?, "# SCAN ")) {
             // Write dataset to hdf5 before continuing with next scan
             if (step_val != null and data.items.len > 0) {
-                try h5f.write_dset(scan_idx.?, step_val.?, run.channel, data.items, shape);
+                try h5f.write_dset(scan_idx.?, step_val.?, ch.name, data.items, shape);
                 data.clearRetainingCapacity();
             }
 
@@ -119,7 +119,7 @@ pub fn parseChannel(
 
             // Write dataset to hdf5 before continuing with next step
             if (step_val != null and data.items.len > 0) {
-                try h5f.write_dset(scan_idx.?, step_val.?, run.channel, data.items, shape);
+                try h5f.write_dset(scan_idx.?, step_val.?, ch.name, data.items, shape);
                 data.clearRetainingCapacity();
             }
 
