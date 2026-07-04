@@ -196,12 +196,14 @@ const FileFormat = enum {
     txt,
     hdf5,
     tdc,
+    jpg,
 
     fn parse(ext: []const u8) !FileFormat {
         if (std.mem.eql(u8, ext, ".txt")) return .txt;
         if (std.mem.eql(u8, ext, ".h5")) return .hdf5;
         if (std.mem.eql(u8, ext, ".hdf5")) return .hdf5;
         if (std.mem.eql(u8, ext, ".tdc")) return .tdc;
+        if (std.mem.eql(u8, ext, ".jpg")) return .jpg;
         return error.UnknownFormat;
     }
 };

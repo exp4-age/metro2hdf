@@ -82,15 +82,16 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Get current working directory for glob'ing
-    const dir = try Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
+    const dir = try Io.Dir.cwd().openDir(io, ".", .{.iterate=true});
     defer dir.close(io);
 
     // Try opening output directory
-    const out_dir = dir.openDir(io, output_dir, .{}) catch |err| return {
-        std.log.info("could not open output directory: {s}", .{output_dir});
-        return err;
+    const out_dir = dir.openDir(io, output_dir, .{}) catch |err| {
+        std.log.err("could not open output directory {s}: {s}", .{output_dir, @errorName(err)});
+        try stdout_writer.printAscii(usage, .{});
+        try stdout_writer.flush();
+        return;
     };
-    std.log.info("saving files to: {s}", .{output_dir});
     defer out_dir.close(io);
 
     // Keep track of already touched files
@@ -106,18 +107,16 @@ pub fn main(init: std.process.Init) !void {
 
         // Skip if the path does not match the glob pattern
         if (!glob.globMatch(pattern, entry.path)) continue;
-        // std.log.info("found: {s}", .{entry.basename});
 
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path) catch |err| {
             std.log.info("skipping {s}: {s}", .{entry.path, @errorName(err)});
             continue;
         };
-
     }
 
     while (run_table.next()) |run| {
-        try stdout_writer.print("run {s}: ", .{run.num});
+        try stdout_writer.print("run {s}:\n", .{run.num});
         try stdout_writer.flush();
 
         // Construct name and path for the hdf5 file
@@ -133,21 +132,21 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             } else {
                 out_dir.deleteFile(io, filename) catch |err| {
-                    std.log.info("skipping {s}: {s}", .{filepath, @errorName(err)});
+                    std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
                     continue;
                 };
             }
         } else |err| switch (err) {
             error.FileNotFound => {},
             else => {
-                std.log.info("skipping {s}: {s}", .{filepath, @errorName(err)});
+                std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
             },
         }
 
         // Create the output hdf5 file
         const path = try arena.dupeSentinel(u8, filepath, 0);
         var h5f = hdf5.File.create(path) catch |err| {
-            std.log.info("skipping {s}: {s}", .{filepath, @errorName(err)});
+            std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
             continue;
         };
         defer h5f.close();
@@ -158,23 +157,18 @@ pub fn main(init: std.process.Init) !void {
         // Iterate over all channels
         for (run.channels.items) |ch| {
             // Update stdout to indicate the channel that is being processed
-            try stdout_writer.print("run {s}: {s}", .{run.num, ch.name});
+            try stdout_writer.print("  {s} ... ", .{ch.name});
             try stdout_writer.flush();
 
             // Parse data and write to the hdf5 file
             ch.parse(&h5f, io, arena) catch |err| {
-                try stdout_writer.printAscii("\r\x1b[2K", .{});
+                try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
                 try stdout_writer.flush();
-                std.log.warn("skipping {s}: {s}", .{ch.name, @errorName(err)});
                 continue;
             };
 
-            // Reset stdout
-            try stdout_writer.printAscii("\r\x1b[2K", .{});
+            try stdout_writer.printAscii("done\n", .{});
             try stdout_writer.flush();
         }
-
-        try stdout_writer.print("run {s}: done\n", .{run.num});
-        try stdout_writer.flush();
     }
 }
