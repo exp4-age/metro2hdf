@@ -82,15 +82,13 @@ pub fn parseHITS(
 
         const step_count = try reader.takeInt(i32, .little);
         const step_table_size = try reader.takeInt(i32, .little);
-        std.log.info("step table with count: {d}, size: {d}", .{step_count, step_table_size});
+        _ = &step_table_size;
         var step_idx: i32 = 0;
 
         while (step_idx < step_count) {
             const value = try reader.take(32);
-            std.log.info("step value: {s}", .{value});
             const data_offset = try reader.takeInt(i64, .little);
             const data_size = try reader.takeInt(i64, .little);
-            std.log.info("data size: {d}, offset: {d}", .{data_size, data_offset});
             if (data_size < 0 or @mod(data_size, 16) != 0) {
                 return error.CorruptedStepTable;
             } else {
@@ -107,19 +105,32 @@ pub fn parseHITS(
         .channel = 0xff,
         .type = 0xa0,
         .bin = 0x0000,
-        .align_ = 0,
+        .@"align" = 0,
     };
     const step_marker = HptdcHit{
         .time = -1,
         .channel = 0xff,
         .type = 0xb0,
         .bin = 0x0000,
-        .align_ = 0,
+        .@"align" = 0,
     };
 
     scan_idx = 0;
+    var buf: [10]u8 = undefined;
+
+    // Create attribute list
+    const name = try allocator.dupeSentinel(u8, ch.name, 0);
+    defer allocator.free(name);
+    var name_attr = try hdf5.StrAttr.init("name", name);
+    defer name_attr.deinit();
+    const mode = "HITS";
+    var mode_attr = try hdf5.StrAttr.init("mode", mode);
+    defer mode_attr.deinit();
+    var attrs: [2]hdf5.StrAttr = .{name_attr, mode_attr};
 
     for (scan_table.scans.items) |step_table| {
+        const scan_idx_str = try std.fmt.bufPrintSentinel(&buf, "{d}", .{scan_idx}, 0);
+
         for (step_table.steps.items) |step| {
             // Go to the step data
             try file_reader.seekTo(@intCast(step.data_offset));
@@ -135,11 +146,11 @@ pub fn parseHITS(
             var hits = try allocator.alloc(HptdcHit, n);
             defer allocator.free(hits);
 
-            var i: usize = 0;
-            while (i < n) {
+            for (0..n) |i| {
                 hits[i] = try reader.takeStruct(HptdcHit, .little);
-                i += 1;
             }
+
+            try h5f.writeCompoundDset(HptdcHit, scan_idx_str, step.value, ch.name, hits, &attrs);
         }
         scan_idx += 1;
     }
@@ -147,9 +158,6 @@ pub fn parseHITS(
     _ = &param_table_offset;
     _ = &param_table_size;
     _ = &scan_marker;
-    _ = &h5f;
-    _ = &ch;
-    return error.NotImplemented;
 }
 
 const ScanTable = struct {
@@ -178,10 +186,11 @@ const StepTable = struct {
         data_offset: i64,
         data_size: i64,
     ) !void {
+        const len = std.mem.findScalar(u8, step_val, 0) orelse step_val.len;
         try self.steps.append(
             self.allocator,
             .{
-                .value = try self.allocator.dupeSentinel(u8, step_val, 0),
+                .value = try self.allocator.dupeSentinel(u8, step_val[0..len], 0),
                 .data_offset = data_offset,
                 .data_size = data_size,
             },
@@ -214,6 +223,6 @@ const HptdcHit = packed struct {
     channel: u8,
     type: u8,
     bin: u16,
-    align_: i32,
+    @"align": i32,
 };
 
