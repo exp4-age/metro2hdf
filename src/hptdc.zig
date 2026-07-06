@@ -2,25 +2,6 @@ const std = @import("std");
 const metro = @import("metro.zig");
 const hdf5 = @import("hdf5.zig");
 
-pub const HptdcError = error {
-    UnsupportedVersion,
-    BrokenHeader,
-};
-
-const HptdcStepEntry = extern struct {
-    value: [32]u8,
-    data_offset: i64,
-    data_size: i64,
-};
-
-const HptdcHit = packed struct {
-    time: i64,
-    channel: u8,
-    type: u8,
-    bin: u16,
-    align_: i32,
-};
-
 pub fn parseChannel(
     ch: metro.Channel,
     file: *std.Io.File,
@@ -28,70 +9,97 @@ pub fn parseChannel(
     io: std.Io,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = &h5f;
-    _ = &ch;
-
     // Initialize the reader
     const buf_size = 4096;
     var read_buffer: [buf_size]u8 = undefined;
-    var reader = file.readerStreaming(io, &read_buffer);
+    var file_reader = file.reader(io, &read_buffer);
+    var reader = &file_reader.interface;
 
-    if (!std.mem.eql(u8, try reader.interface.take(5), "HPTDC")) return HptdcError.BrokenHeader;
+    // Check for HPTDC marker
+    if (!std.mem.eql(u8, try reader.take(5), "HPTDC")) return error.CorruptedHeader;
 
-    const Header = packed struct {
-        size: i32,
-        version: i32,
-    };
+    // Starting in around October 2017, a reworked (and extendable)
+    // header format was introduced. We only support those newer
+    // versions: use the python version of metro2hdf for older versions
+    const header_size = try reader.takeInt(i32, .little);
+    if (header_size > 4096) return error.UnsupportedVersion;
+    if (header_size < 32) return error.CorruptedHeader;
 
-    const header = try reader.interface.takeStruct(Header, .little);
-    if (header.size > 4096) return HptdcError.UnsupportedVersion;
-    if (header.size < 32) return HptdcError.BrokenHeader;
+    const version = try reader.takeInt(i32, .little);
+    _ = &version;
 
-    const mode = try reader.interface.take(4);
+    // HPTDC mode (HITS, GRPS)
+    const mode = try reader.take(4);
 
-    const Table = packed struct {
-        offset: i64,
-        size: i32,
-    };
+    if (std.mem.eql(u8, mode, "HITS")) {
+        try parseHITS(ch, &file_reader, header_size, h5f, allocator);
+    }
+}
 
-    const scan_table = try reader.interface.takeStruct(Table, .little);
-    if (scan_table.offset < header.size + 4) return HptdcError.BrokenHeader;
-    const param_table = try reader.interface.takeStruct(Table, .little);
+pub fn parseHITS(
+    ch: metro.Channel,
+    file_reader: *std.Io.File.Reader,
+    header_size: i32,
+    h5f: *hdf5.File,
+    allocator: std.mem.Allocator,
+) !void {
+    var reader = &file_reader.interface;
+
+    // Where and how big is the scan table?
+    const scan_table_offset = try reader.takeInt(i64, .little);
+    const scan_table_size = try reader.takeInt(i32, .little);
+    if (scan_table_offset < header_size + 4) return error.CorruptedHeader;
+
+    // Where and how big is the parameter table?
+    const param_table_offset = try reader.takeInt(i64, .little);
+    const param_table_size = try reader.takeInt(i32, .little);
 
     // Skip additional header if present
-    const remaining_header: usize = @intCast(header.size - 32);
-    try reader.interface.discardAll(remaining_header);
+    // header_size does not include "HPTDC" and i32 header_size itself,
+    // so add 9 bytes
+    try file_reader.seekTo(@intCast(header_size + 9));
 
-    // Next should be 'DATA' in supported version
-    if (!std.mem.eql(u8, try reader.interface.take(4), "DATA")) return HptdcError.UnsupportedVersion;
+    // Next should be 'DATA' in supported versions
+    if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
     // Go to scan table start
-    const skip_bytes: usize = @intCast(scan_table.offset - header.size - 4);
-    try reader.interface.discardAll(skip_bytes);
+    // const scan_table_offset: usize = @intCast(scan_table.offset);
+    // try reader.discardAll(scan_table_offset - reader.seek);
+    // const scan_table_offset_u64: u64 = @intCast(scan_table_offset);
+    // try file_reader.seekTo(scan_table_offset_u64);
+    try file_reader.seekTo(@intCast(scan_table_offset));
 
-    const Step = packed struct {
-        count: i32,
-        table_size: i32,
-    };
+    var scan_table = ScanTable{.allocator = allocator};
+    defer scan_table.deinit();
 
-    var step_tables: std.ArrayList(HptdcStepEntry) = .empty;
-    defer step_tables.deinit(allocator);
+    var scan_idx: i32 = 0;
 
-    while (reader.interface.takeStruct(Step, .little)) |_| {
-        while (reader.interface.takeStruct(HptdcStepEntry, .little)) |step_table| {
-            if (step_table.data_size < 0 or @mod(step_table.data_size, 14) != 0) {
-                step_tables.clearRetainingCapacity();
-                break;
+    while (scan_idx < scan_table_size) {
+        // Create a new step table
+        var step_table = StepTable{.allocator=allocator};
+        errdefer step_table.deinit();
+        // try scan_table.addScan();
+
+        const step_count = try reader.takeInt(i32, .little);
+        const step_table_size = try reader.takeInt(i32, .little);
+        std.log.info("step table with count: {d}, size: {d}", .{step_count, step_table_size});
+        var step_idx: i32 = 0;
+
+        while (step_idx < step_count) {
+            const value = try reader.take(32);
+            std.log.info("step value: {s}", .{value});
+            const data_offset = try reader.takeInt(i64, .little);
+            const data_size = try reader.takeInt(i64, .little);
+            std.log.info("data size: {d}, offset: {d}", .{data_size, data_offset});
+            if (data_size < 0 or @mod(data_size, 16) != 0) {
+                return error.CorruptedStepTable;
             } else {
-                try step_tables.append(allocator, step_table);
+                try step_table.append(value, data_offset, data_size);
             }
-        } else |_| {}
-    } else |_| {}
-
-    if (step_tables.items.len == 0) {
-        // Rebuild step table
-    } else {
-        // Step table okay
+            step_idx += 1;
+        }
+        try scan_table.append(step_table);
+        scan_idx += 1;
     }
 
     const scan_marker = HptdcHit{
@@ -109,9 +117,103 @@ pub fn parseChannel(
         .align_ = 0,
     };
 
-    _ = &mode;
-    _ = &param_table;
+    scan_idx = 0;
+
+    for (scan_table.scans.items) |step_table| {
+        for (step_table.steps.items) |step| {
+            // Go to the step data
+            try file_reader.seekTo(@intCast(step.data_offset));
+
+            // Check if we are at a step marker
+            if (try reader.takeStruct(HptdcHit, .little) != step_marker) return error.MissingMarker;
+
+            // Skip if there is no data
+            if (step.data_size < @sizeOf(HptdcHit) or @mod(step.data_size, @sizeOf(HptdcHit)) != 0) continue;
+
+            const n: usize = @intCast(@divExact(step.data_size, @sizeOf(HptdcHit)));
+
+            var hits = try allocator.alloc(HptdcHit, n);
+            defer allocator.free(hits);
+
+            var i: usize = 0;
+            while (i < n) {
+                hits[i] = try reader.takeStruct(HptdcHit, .little);
+                i += 1;
+            }
+        }
+        scan_idx += 1;
+    }
+
+    _ = &param_table_offset;
+    _ = &param_table_size;
     _ = &scan_marker;
-    _ = &step_marker;
-    return HptdcError.UnsupportedVersion;
+    _ = &h5f;
+    _ = &ch;
+    return error.NotImplemented;
 }
+
+const ScanTable = struct {
+    scans: std.ArrayList(StepTable) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn append(self: *@This(), step_table: StepTable) !void {
+        try self.scans.append(self.allocator, step_table);
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (self.scans.items) |*step_table| {
+            step_table.deinit();
+        }
+        self.scans.deinit(self.allocator);
+    }
+};
+
+const StepTable = struct {
+    steps: std.ArrayList(StepEntry) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn append(
+        self: *@This(),
+        step_val: []const u8,
+        data_offset: i64,
+        data_size: i64,
+    ) !void {
+        try self.steps.append(
+            self.allocator,
+            .{
+                .value = try self.allocator.dupeSentinel(u8, step_val, 0),
+                .data_offset = data_offset,
+                .data_size = data_size,
+            },
+        );
+    }
+
+    pub fn clearRetainingCapacity(self: *@This()) void {
+        for (self.steps.items) |step| {
+            self.allocator.free(step.step_val);
+        }
+        self.steps.clearRetainingCapacity();
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (self.steps.items) |step| {
+            self.allocator.free(step.value);
+        }
+        self.steps.deinit(self.allocator);
+    }
+};
+
+const StepEntry = struct {
+    value: []const u8,
+    data_offset: i64,
+    data_size: i64,
+};
+
+const HptdcHit = packed struct {
+    time: i64,
+    channel: u8,
+    type: u8,
+    bin: u16,
+    align_: i32,
+};
+
