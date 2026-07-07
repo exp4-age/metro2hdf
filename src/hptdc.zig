@@ -8,6 +8,7 @@ pub fn parseChannel(
     h5f: *hdf5.File,
     io: std.Io,
     allocator: std.mem.Allocator,
+    options: metro.Options,
 ) !void {
     // Initialize the reader
     const buf_size = 4096;
@@ -32,7 +33,7 @@ pub fn parseChannel(
     const mode = try reader.take(4);
 
     if (std.mem.eql(u8, mode, "HITS")) {
-        try parseHITS(ch, &file_reader, header_size, h5f, allocator);
+        try parseHITS(ch, &file_reader, header_size, h5f, allocator, options);
     }
 }
 
@@ -42,6 +43,7 @@ pub fn parseHITS(
     header_size: i32,
     h5f: *hdf5.File,
     allocator: std.mem.Allocator,
+    options: metro.Options,
 ) !void {
     var reader = &file_reader.interface;
 
@@ -150,7 +152,8 @@ pub fn parseHITS(
                 hits[i] = try reader.takeStruct(HptdcHit, .little);
             }
 
-            try h5f.writeCompoundDset(HptdcHit, scan_idx_str, step.value, ch.name, hits, &attrs);
+            try h5f.writeCompoundDset(
+                HptdcHit, hits, scan_idx_str, step.value, ch.name, &attrs, options);
         }
         scan_idx += 1;
     }

@@ -4,6 +4,11 @@ const tsv = @import("tsv.zig");
 const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
 
+pub const Options = struct {
+    chunk_size: usize = 1e5,
+    compress: usize = 4,
+};
+
 pub const RunTable = struct {
     map: std.AutoHashMap(u64, Run),
     sorting: std.ArrayList(u64),
@@ -178,6 +183,7 @@ pub const Channel = struct {
         h5f: *hdf5.File,
         io: std.Io,
         allocator: std.mem.Allocator,
+        options: Options,
     ) !void {
         // Open input file
         var file = try std.Io.Dir.cwd().openFile(io, self.path, .{.mode=.read_only});
@@ -185,8 +191,8 @@ pub const Channel = struct {
 
         // Call the parser based on the file format
         switch (self.format) {
-            .txt => {try tsv.parseChannel(self, &file, h5f, io, allocator);},
-            .tdc => {try hptdc.parseChannel(self, &file, h5f, io, allocator);},
+            .txt => {try tsv.parseChannel(self, &file, h5f, io, allocator, options);},
+            .tdc => {try hptdc.parseChannel(self, &file, h5f, io, allocator, options);},
             else => {return error.UnknownFormat;},
         }
     }

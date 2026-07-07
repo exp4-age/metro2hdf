@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     // Link hdf5
     exe.root_module.addIncludePath(b.path("src"));
     exe.root_module.addCSourceFile(.{
-        .file = b.path("src/h5types.c"),
+        .file = b.path("src/hdf5lib.c"),
         .flags = &.{"-std=c11"},
     });
     exe.root_module.linkSystemLibrary("hdf5", .{});

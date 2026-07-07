@@ -8,6 +8,7 @@ pub fn parseChannel(
     h5f: *hdf5.File,
     io: std.Io,
     allocator: std.mem.Allocator,
+    options: metro.Options,
 ) !void {
     // Initialize the reader
     const buf_size = 4096;
@@ -89,12 +90,14 @@ pub fn parseChannel(
             // Write dataset to hdf5 before continuing with next scan
             if (step_idx != null and data.items.len > 0) {
                 try h5f.writeSimpleDset(
+                    f64,
+                    data.items,
+                    shape,
                     scan_idx.?,
                     step_val.?,
                     ch.name,
-                    data.items,
-                    shape,
                     &attrs,
+                    options,
                 );
                 data.clearRetainingCapacity();
             }
@@ -116,12 +119,14 @@ pub fn parseChannel(
             // Write dataset to hdf5 before continuing with next step
             if (step_idx != null and data.items.len > 0) {
                 try h5f.writeSimpleDset(
+                    f64,
+                    data.items,
+                    shape,
                     scan_idx.?,
                     step_val.?,
                     ch.name,
-                    data.items,
-                    shape,
                     &attrs,
+                    options,
                 );
                 data.clearRetainingCapacity();
             }
@@ -138,12 +143,14 @@ pub fn parseChannel(
     // Write last dataset to hdf5
     if (step_idx != null and data.items.len > 0) {
         try h5f.writeSimpleDset(
+            f64,
+            data.items,
+            shape,
             scan_idx.?,
             step_val.?,
             ch.name,
-            data.items,
-            shape,
             &attrs,
+            options,
         );
     }
 }

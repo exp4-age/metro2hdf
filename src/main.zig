@@ -8,21 +8,21 @@ const hdf5 = @import("hdf5.zig");
 const usage =
     \\Usage: metro2hdf [OPTIONS]...
     \\
-    \\  -o, --output-dir DIR            write hdf5 files into the specified
+    \\  -o, --output-dir=DIR            write hdf5 files into the specified
     \\                                  directory (default: ".")
-    \\      --glob GLOB                 glob string for selecting metro run
+    \\      --glob=GLOB                 glob string for selecting metro run
     \\                                  files (default: "*")
     \\      --replace                   overwrite existing files
     \\      --help                      show this help and exit
     \\
-    \\HDF5 OPTIONS
-    \\      --compress [LEVEL]          use gzip compression with optionally
-    \\                                  specified level (default: 4)
+    \\HDF5 OPTIONS (only affects specific channels)
+    \\      --chunk-size=SIZE           chunk size (bytes) used when
+    \\                                  writing compressed data
+    \\      --compress=LEVEL            use gzip compression with specified
+    \\                                  level (default: 4) from 0 to 9
+    \\                                  (no compression to max compression)
     \\
     \\HPTDC OPTIONS
-    \\      --hptdc-chunk-size SIZE     number of data elements to read,
-    \\                                  convert and store at a time
-    \\                                  (default: 1e5)
     \\      --hptdc-ignore-tables       ignore scan and step tables in the
     \\                                  TDC file and rebuild them by
     \\                                  searching for the markers
@@ -45,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
     var pattern: []const u8 = "*";
     var output_dir: []const u8 = ".";
     var replace = false;
+    var options = metro.Options{};
 
     // Parse command line arguments
     var args = try init.minimal.args.iterateAllocator(arena);
@@ -54,23 +55,30 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--glob")) {
-            if (args.next()) |val| {
-                pattern = val;
-                continue;
-            }
-        } else if (std.mem.eql(u8, arg, "--output-dir") or std.mem.eql(u8, arg, "-o")) {
-            if (args.next()) |val| {
-                output_dir = val;
-                continue;
-            }
+        if (std.mem.startsWith(u8, arg, "--glob=")) {
+            pattern = arg[7..];
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "--output-dir=")) {
+            output_dir = arg[13..];
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "-o=")) {
+            output_dir = arg[3..];
+            continue;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
             continue;
-        } else if (std.mem.eql(u8, arg, "--compress")) {
-            return error.NotImplemented;
-        } else if (std.mem.eql(u8, arg, "--hptdc-chunk-size")) {
-            return error.NotImplemented;
+        } else if (std.mem.startsWith(u8, arg, "--chunk-size=")) {
+            if (std.fmt.parseInt(usize, arg[13..], 10)) |chunk_size| {
+                options.chunk_size = chunk_size;
+                continue;
+            } else |_| {}
+        } else if (std.mem.startsWith(u8, arg, "--compress=")) {
+            if (std.fmt.parseInt(usize, arg[11..], 10)) |compress| {
+                if (compress >= 0 and compress < 10) {
+                    options.compress = compress;
+                    continue;
+                }
+            } else |_| {}
         } else if (std.mem.eql(u8, arg, "--hptdc-ignore-tables")) {
             return error.NotImplemented;
         } else if (std.mem.eql(u8, arg, "--hptdc-decode-words")) {
@@ -161,7 +169,7 @@ pub fn main(init: std.process.Init) !void {
             try stdout_writer.flush();
 
             // Parse data and write to the hdf5 file
-            ch.parse(&h5f, io, arena) catch |err| {
+            ch.parse(&h5f, io, arena, options) catch |err| {
                 try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
                 try stdout_writer.flush();
                 continue;

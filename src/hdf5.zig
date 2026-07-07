@@ -1,10 +1,7 @@
 const std = @import("std");
 
 const hdf5 = @cImport({
-    @cInclude("hdf5.h");
-});
-const h5t = @cImport({
-    @cInclude("h5types.h");
+    @cInclude("hdf5lib.h");
 });
 
 const metro = @import("metro.zig");
@@ -21,7 +18,7 @@ pub const File = struct {
         if (id < 0) return error.H5I_INVALID_HID;
 
         // Create link creation property list for dataset creation
-        const lcpl = hdf5.H5Pcreate(h5t.shim_H5P_LINK_CREATE());
+        const lcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_LINK_CREATE());
         if (lcpl < 0) return error.H5I_INVALID_HID;
 
         // Enable creation of intermediate groups as needed
@@ -43,15 +40,22 @@ pub const File = struct {
 
     pub fn writeSimpleDset(
         self: *@This(),
+        comptime T: type,
+        data: []const T,
+        shape: usize,
         scan_idx: []const u8,
         step_val: []const u8,
         channel: []const u8,
-        data: []const f64,
-        shape: usize,
         attrs: []StrAttr,
+        options: metro.Options,
     ) !void {
         // Fail if the file is not open
         if (self.id < 0) return error.FileNotOpen;
+
+        // Create dataset properties
+        const dcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_DATASET_CREATE());
+        if (dcpl < 0) return error.H5I_INVALID_HID;
+        defer _ = hdf5.H5Pclose(dcpl);
 
         // Create a dataspace
         var fspace: hdf5.hid_t = undefined;
@@ -59,15 +63,19 @@ pub const File = struct {
             fspace = hdf5.H5Screate_simple(1, &[1]hdf5.hsize_t{@intCast(data.len)}, null);
         } else {
             if (data.len % shape != 0) return error.InvalidShape;
-            const rows = data.len / shape;
+            const rows = @divExact(data.len, shape);
             fspace = hdf5.H5Screate_simple(
                 2, &[2]hdf5.hsize_t{@intCast(rows), @intCast(shape)}, null);
+
+            // Make 2d data column major by writing it in chunks
+            const chunk = [2]hdf5.hsize_t{rows, 1};
+            if (hdf5.H5Pset_chunk(dcpl, 2, &chunk) < 0) return error.H5I_INVALID_HID;
         }
         if (fspace < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Sclose(fspace);
 
         // Define the datatype
-        const type_id = h5t.shim_H5T_IEEE_F64LE();
+        const type_id = getH5T(T);
 
         // Format path to dataset
         var buf: [1024]u8 = undefined;
@@ -76,7 +84,7 @@ pub const File = struct {
 
         // Create the dataset
         const dset = hdf5.H5Dcreate2(
-            self.id, name, type_id, fspace, self.lcpl, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+            self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
         if (dset < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Dclose(dset);
 
@@ -87,52 +95,66 @@ pub const File = struct {
 
         // Write the dataset
         if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) {
-            return error.WriteFailed;
+            return error.H5DWriteFailed;
         }
+
+        _ = &options;
     }
 
     pub fn writeCompoundDset(
         self: *@This(),
         comptime T: type,
+        data: []const T,
         scan_idx: []const u8,
         step_val: []const u8,
         channel: []const u8,
-        data: []const T,
         attrs: []StrAttr,
+        options: metro.Options,
     ) !void {
         if (self.id < 0) return error.FileNotOpen;
 
-        // Optional: reject zero-sized/empty-field structs
+        // Compile error if T has no fields
         if (@sizeOf(T) == 0) @compileError("Zero-sized structs are not supported");
 
-        // 1D dataspace
+        // Createa 1d dataspace
         const dims = [1]hdf5.hsize_t{@intCast(data.len)};
         const fspace = hdf5.H5Screate_simple(1, &dims, null);
         if (fspace < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Sclose(fspace);
 
-        // Compound datatype for T
-        const type_id = try makeCompoundType(T);
+        const dcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_DATASET_CREATE());
+        if (dcpl < 0) return error.H5I_INVALID_HID;
+        defer _ = hdf5.H5Pclose(dcpl);
+
+        const chunk_size: hdf5.hsize_t = @intCast(@divFloor(options.chunk_size, @sizeOf(T)));
+        if (data.len > chunk_size) {
+            const chunk = [1]hdf5.hsize_t{chunk_size};
+            if (hdf5.H5Pset_chunk(dcpl, 1, &chunk) < 0) return error.H5I_INVALID_HID;
+            if (hdf5.H5Pset_deflate(dcpl, @intCast(options.compress)) < 0) return error.H5I_INVALID_HID;
+        }
+
+        // Create the compound datatype for T
+        const type_id = try createCompoundType(T);
         if (type_id < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Tclose(type_id);
 
-        // Path
+        // Format path to dataset
         var buf: [1024]u8 = undefined;
         const name = try std.fmt.bufPrintSentinel(
             &buf, "{s}/{s}/{s}", .{scan_idx, step_val, channel}, 0);
 
-        // Create dataset
+        // Create the dataset
         const dset = hdf5.H5Dcreate2(
-            self.id, name, type_id, fspace, self.lcpl, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+            self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
         if (dset < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Dclose(dset);
 
-        // Attributes
+        // Write attributes
         for (attrs) |*attr| {
             try attr.write(dset);
         }
 
-        // Write
+        // Write the dataset
         if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) {
             return error.WriteFailed;
         }
@@ -180,7 +202,7 @@ pub const StrAttr = struct {
 
     pub fn init(name: [:0]const u8, value: [:0]const u8) !StrAttr {
         // Create the hdf5 type
-        const type_id = hdf5.H5Tcopy(h5t.shim_H5T_C_S1());
+        const type_id = hdf5.H5Tcopy(hdf5.ZIG_H5T_C_S1());
         if (type_id < 0) return error.H5I_INVALID_HID;
         if (hdf5.H5Tset_size(type_id, hdf5.H5T_VARIABLE) < 0) return error.H5Error;
         if (hdf5.H5Tset_cset(type_id, hdf5.H5T_CSET_UTF8) < 0) return error.H5Error;
@@ -228,34 +250,39 @@ pub const StrAttr = struct {
     }
 };
 
-fn h5TypeFor(comptime FieldType: type) hdf5.hid_t {
-    return switch (FieldType) {
-        u8 => h5t.shim_H5T_NATIVE_UCHAR(),
-        u16 => h5t.shim_H5T_NATIVE_USHORT(),
-        i32 => h5t.shim_H5T_NATIVE_INT(),
-        i64 => h5t.shim_H5T_NATIVE_LLONG(),
-        else => @compileError("Unsupported field type for HDF5 compound: " ++ @typeName(FieldType)),
+fn getH5T(comptime T: type) hdf5.hid_t {
+    return switch (T) {
+        u8 => hdf5.ZIG_H5T_NATIVE_UCHAR(),
+        u16 => hdf5.ZIG_H5T_NATIVE_USHORT(),
+        i32 => hdf5.ZIG_H5T_NATIVE_INT(),
+        i64 => hdf5.ZIG_H5T_NATIVE_LLONG(),
+        f64 => hdf5.ZIG_H5T_IEEE_F64LE(),
+        else => @compileError("No known H5T for: " ++ @typeName(T)),
     };
 }
 
-fn makeCompoundType(comptime T: type) !hdf5.hid_t {
+fn createCompoundType(comptime T: type) !hdf5.hid_t {
     const ti = @typeInfo(T);
     if (ti != .@"struct") {
-        @compileError("T must be a struct or packed struct");
+        @compileError("T must be a struct");
     }
 
+    // Create the H5T compound type
     const type_id = hdf5.H5Tcreate(hdf5.H5T_COMPOUND, @sizeOf(T));
     if (type_id < 0) return error.H5I_INVALID_HID;
+    errdefer _ = hdf5.H5Tclose(type_id);
 
+    // Insert corresponding type for each field of T
     inline for (ti.@"struct".fields) |f| {
-        const field_h5 = h5TypeFor(f.type);
+        // Look up H5T type corresponding to the zig type
+        const f_type = getH5T(f.type);
 
-        // HDF5 expects a C string for field name
+        // Add null termination
         const cname = f.name ++ "\x00";
 
-        if (hdf5.H5Tinsert(type_id, cname.ptr, @offsetOf(T, f.name), field_h5) < 0) {
-            _ = hdf5.H5Tclose(type_id);
-            return error.WriteFailed;
+        // Try to insert the type
+        if (hdf5.H5Tinsert(type_id, cname.ptr, @offsetOf(T, f.name), f_type) < 0) {
+            return error.H5I_INVALID_HID;
         }
     }
 
