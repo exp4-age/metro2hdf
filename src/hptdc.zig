@@ -65,10 +65,6 @@ pub fn parseHITS(
     if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
     // Go to scan table start
-    // const scan_table_offset: usize = @intCast(scan_table.offset);
-    // try reader.discardAll(scan_table_offset - reader.seek);
-    // const scan_table_offset_u64: u64 = @intCast(scan_table_offset);
-    // try file_reader.seekTo(scan_table_offset_u64);
     try file_reader.seekTo(@intCast(scan_table_offset));
 
     var scan_table = ScanTable{.allocator = allocator};
@@ -80,7 +76,6 @@ pub fn parseHITS(
         // Create a new step table
         var step_table = StepTable{.allocator=allocator};
         errdefer step_table.deinit();
-        // try scan_table.addScan();
 
         const step_count = try reader.takeInt(i32, .little);
         const step_table_size = try reader.takeInt(i32, .little);
@@ -120,15 +115,12 @@ pub fn parseHITS(
     scan_idx = 0;
     var buf: [10]u8 = undefined;
 
-    // Create attribute list
-    const name = try allocator.dupeSentinel(u8, ch.name, 0);
-    defer allocator.free(name);
-    var name_attr = try hdf5.StrAttr.init("name", name);
-    defer name_attr.deinit();
-    const mode = "HITS";
-    var mode_attr = try hdf5.StrAttr.init("mode", mode);
-    defer mode_attr.deinit();
-    var attrs: [2]hdf5.StrAttr = .{name_attr, mode_attr};
+    // Create and parse parameter table
+    var param_table = ParamTable{.allocator = allocator};
+    defer param_table.deinit();
+    param_table.addAttr("name", ch.name) catch {};
+    param_table.addAttr("mode", "HITS") catch {};
+    parseParamTable(file_reader, param_table_offset, param_table_size, &param_table) catch {};
 
     for (scan_table.scans.items) |step_table| {
         const scan_idx_str = try std.fmt.bufPrintSentinel(&buf, "{d}", .{scan_idx}, 0);
@@ -153,15 +145,55 @@ pub fn parseHITS(
             }
 
             try h5f.writeCompoundDset(
-                HptdcHit, hits, scan_idx_str, step.value, ch.name, &attrs, options);
+                HptdcHit, hits, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
         }
         scan_idx += 1;
     }
 
-    _ = &param_table_offset;
-    _ = &param_table_size;
     _ = &scan_marker;
 }
+
+pub fn parseParamTable(
+    file_reader: *std.Io.File.Reader,
+    offset: i64,
+    size: i32,
+    param_table: *ParamTable,
+) !void {
+    try file_reader.seekTo(@intCast(offset));
+    const table = try file_reader.interface.take(@intCast(size));
+    var params = std.mem.splitScalar(u8, table, '\n');
+    while (params.next()) |line| {
+        var param = std.mem.splitScalar(u8, line, ' ');
+        const name = param.next() orelse continue;
+        const value = param.next() orelse continue;
+        if (param.next() != null) continue;
+        try param_table.addAttr(name, value);
+    }
+}
+
+const ParamTable = struct {
+    attrs: std.ArrayList(hdf5.StrAttr) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn addAttr(self: *@This(), name: []const u8, value: []const u8) !void {
+        const cname = try self.allocator.dupeSentinel(u8, name, 0);
+        errdefer self.allocator.free(cname);
+        const cvalue = try self.allocator.dupeSentinel(u8, value, 0);
+        errdefer self.allocator.free(cvalue);
+        var attr = try hdf5.StrAttr.init(cname, cvalue);
+        errdefer attr.deinit();
+        try self.attrs.append(self.allocator, attr);
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (self.attrs.items) |*attr| {
+            self.allocator.free(attr.name);
+            self.allocator.free(attr.value);
+            attr.deinit();
+        }
+        self.attrs.deinit(self.allocator);
+    }
+};
 
 const ScanTable = struct {
     scans: std.ArrayList(StepTable) = .empty,
@@ -200,13 +232,6 @@ const StepTable = struct {
         );
     }
 
-    pub fn clearRetainingCapacity(self: *@This()) void {
-        for (self.steps.items) |step| {
-            self.allocator.free(step.step_val);
-        }
-        self.steps.clearRetainingCapacity();
-    }
-
     pub fn deinit(self: *@This()) void {
         for (self.steps.items) |step| {
             self.allocator.free(step.value);
@@ -216,7 +241,7 @@ const StepTable = struct {
 };
 
 const StepEntry = struct {
-    value: []const u8,
+    value: [:0]const u8,
     data_offset: i64,
     data_size: i64,
 };

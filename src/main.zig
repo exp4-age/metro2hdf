@@ -17,7 +17,8 @@ const usage =
     \\
     \\HDF5 OPTIONS (only affects specific channels)
     \\      --chunk-size=SIZE           chunk size (bytes) used when
-    \\                                  writing compressed data
+    \\                                  writing compressed datasets
+    \\                                  (default: 1e5)
     \\      --compress=LEVEL            use gzip compression with specified
     \\                                  level (default: 4) from 0 to 9
     \\                                  (no compression to max compression)
@@ -34,7 +35,10 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !void {
-    const arena: std.mem.Allocator = init.arena.allocator();
+    // const arena: std.mem.Allocator = init.arena.allocator();
+    var allocator: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = allocator.deinit();
+    const arena = allocator.allocator();
     const io = init.io;
 
     var stdout_buffer: [1024]u8 = undefined;
@@ -121,6 +125,8 @@ pub fn main(init: std.process.Init) !void {
             std.log.info("skipping {s}: {s}", .{entry.path, @errorName(err)});
             continue;
         };
+
+        _ = allocator.detectLeaks();
     }
 
     while (run_table.next()) |run| {
@@ -177,6 +183,7 @@ pub fn main(init: std.process.Init) !void {
 
             try stdout_writer.printAscii("done\n", .{});
             try stdout_writer.flush();
+            _ = allocator.detectLeaks();
         }
     }
 }

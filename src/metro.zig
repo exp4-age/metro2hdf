@@ -109,16 +109,17 @@ pub const RunTable = struct {
         while (it.next()) |entry| {
             entry.value_ptr.deinit();
         }
+        self.sorting.deinit(self.map.allocator);
         self.map.deinit();
     }
 };
 
 pub const Run = struct {
     idx: usize,
-    num: []const u8,
-    name: []const u8,
-    date: []const u8,
-    time: []const u8,
+    num: [:0]const u8,
+    name: [:0]const u8,
+    date: [:0]const u8,
+    time: [:0]const u8,
     channels: std.ArrayList(Channel),
     allocator: std.mem.Allocator,
 
@@ -130,12 +131,20 @@ pub const Run = struct {
         time: []const u8,
         allocator: std.mem.Allocator,
     ) !Run {
+        const num0 = try allocator.dupeSentinel(u8, num, 0);
+        errdefer allocator.free(num0);
+        const name0 = try allocator.dupeSentinel(u8, name, 0);
+        errdefer allocator.free(name0);
+        const date0 = try allocator.dupeSentinel(u8, date, 0);
+        errdefer allocator.free(date0);
+        const time0 = try allocator.dupeSentinel(u8, time, 0);
+        errdefer allocator.free(time0);
         return .{
             .idx = idx,
-            .num = try allocator.dupeSentinel(u8, num, 0),
-            .name = try allocator.dupeSentinel(u8, name, 0),
-            .date = try allocator.dupeSentinel(u8, date, 0),
-            .time = try allocator.dupeSentinel(u8, time, 0),
+            .num = num0,
+            .name = name0,
+            .date = date0,
+            .time = time0,
             .channels = .empty,
             .allocator = allocator,
         };
@@ -147,11 +156,11 @@ pub const Run = struct {
         channel: []const u8,
         format: FileFormat,
     ) !void {
-        const ch = Channel{
-            .path = try self.allocator.dupeSentinel(u8, path, 0),
-            .name = try self.allocator.dupeSentinel(u8, channel, 0),
-            .format = format,
-        };
+        const path0 = try self.allocator.dupeSentinel(u8, path, 0);
+        errdefer self.allocator.free(path0);
+        const channel0 = try self.allocator.dupeSentinel(u8, channel, 0);
+        errdefer self.allocator.free(channel0);
+        const ch = Channel{.path = path0, .name = channel0, .format = format};
         try self.channels.append(self.allocator, ch);
     }
 
@@ -163,7 +172,7 @@ pub const Run = struct {
         self.allocator.free(self.time);
 
         // Free strings in channels
-        for (self.channels.items) |ch| {
+        for (self.channels.items) |*ch| {
             self.allocator.free(ch.path);
             self.allocator.free(ch.name);
         }
@@ -174,8 +183,8 @@ pub const Run = struct {
 };
 
 pub const Channel = struct {
-    path: []const u8,
-    name: []const u8,
+    path: [:0]const u8,
+    name: [:0]const u8,
     format: FileFormat,
 
     pub fn parse(

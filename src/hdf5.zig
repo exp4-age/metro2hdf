@@ -196,7 +196,7 @@ pub const File = struct {
 
 pub const StrAttr = struct {
     name: [:0]const u8,
-    value: [*:0]const u8,
+    value: [:0]const u8,
     type_id: hdf5.hid_t,
     fspace: hdf5.hid_t,
 
@@ -218,7 +218,7 @@ pub const StrAttr = struct {
     pub fn write(self: *@This(), obj: hdf5.hid_t) !void {
         if (obj < 0) return error.H5I_INVALID_HID;
 
-        const cptr: [*c]const u8 = self.value;
+        const cptr: [*c]const u8 = self.value.ptr;
         const buf: ?*const anyopaque = @ptrCast(&cptr);
 
         // Overwrite if attribute already exists
