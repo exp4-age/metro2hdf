@@ -71,8 +71,11 @@ pub const RunTable = struct {
         const gop = try self.map.getOrPut(run_hash);
 
         if (!gop.found_existing) {
+            errdefer self.map.removeByPtr(gop.key_ptr);
+
             // Add new run to the hash map
             gop.value_ptr.* = try .init(idx, num, name, date, time, self.map.allocator);
+            errdefer gop.value_ptr.deinit();
 
             var sorted_idx: usize = 0;
             for (self.sorting.items) |h| {
@@ -85,6 +88,7 @@ pub const RunTable = struct {
                 }
             }
             try self.sorting.insert(self.map.allocator, sorted_idx, run_hash);
+            errdefer _ = self.sorting.orderedRemove(sorted_idx);
         }
 
         // Append the channel to the run
@@ -105,10 +109,10 @@ pub const RunTable = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        var it = self.map.iterator();
-        while (it.next()) |entry| {
+         var it = self.map.iterator();
+         while (it.next()) |*entry| {
             entry.value_ptr.deinit();
-        }
+         }
         self.sorting.deinit(self.map.allocator);
         self.map.deinit();
     }
@@ -116,10 +120,10 @@ pub const RunTable = struct {
 
 pub const Run = struct {
     idx: usize,
-    num: [:0]const u8,
-    name: [:0]const u8,
-    date: [:0]const u8,
-    time: [:0]const u8,
+    num: []const u8,
+    name: []const u8,
+    date: []const u8,
+    time: []const u8,
     channels: std.ArrayList(Channel),
     allocator: std.mem.Allocator,
 
@@ -131,13 +135,13 @@ pub const Run = struct {
         time: []const u8,
         allocator: std.mem.Allocator,
     ) !Run {
-        const num0 = try allocator.dupeSentinel(u8, num, 0);
+        const num0 = try allocator.dupe(u8, num);
         errdefer allocator.free(num0);
-        const name0 = try allocator.dupeSentinel(u8, name, 0);
+        const name0 = try allocator.dupe(u8, name);
         errdefer allocator.free(name0);
-        const date0 = try allocator.dupeSentinel(u8, date, 0);
+        const date0 = try allocator.dupe(u8, date);
         errdefer allocator.free(date0);
-        const time0 = try allocator.dupeSentinel(u8, time, 0);
+        const time0 = try allocator.dupe(u8, time);
         errdefer allocator.free(time0);
         return .{
             .idx = idx,
@@ -153,14 +157,11 @@ pub const Run = struct {
     pub fn addChannel(
         self: *@This(),
         path: []const u8,
-        channel: []const u8,
+        name: []const u8,
         format: FileFormat,
     ) !void {
-        const path0 = try self.allocator.dupeSentinel(u8, path, 0);
-        errdefer self.allocator.free(path0);
-        const channel0 = try self.allocator.dupeSentinel(u8, channel, 0);
-        errdefer self.allocator.free(channel0);
-        const ch = Channel{.path = path0, .name = channel0, .format = format};
+        var ch: Channel = try .init(path, name, format, self.allocator);
+        errdefer ch.deinit();
         try self.channels.append(self.allocator, ch);
     }
 
@@ -171,10 +172,9 @@ pub const Run = struct {
         self.allocator.free(self.date);
         self.allocator.free(self.time);
 
-        // Free strings in channels
+        // Deinit channels
         for (self.channels.items) |*ch| {
-            self.allocator.free(ch.path);
-            self.allocator.free(ch.name);
+            ch.deinit();
         }
 
         // Deinit the array list
@@ -183,9 +183,23 @@ pub const Run = struct {
 };
 
 pub const Channel = struct {
-    path: [:0]const u8,
-    name: [:0]const u8,
+    path: []const u8,
+    name: []const u8,
     format: FileFormat,
+    allocator: std.mem.Allocator,
+
+    pub fn init(
+        path: []const u8,
+        name: []const u8,
+        format: FileFormat,
+        allocator: std.mem.Allocator,
+    ) !Channel {
+        const path0 = try allocator.dupe(u8, path);
+        errdefer allocator.free(path0);
+        const name0 = try allocator.dupe(u8, name);
+        errdefer allocator.free(name0);
+        return .{.path = path0, .name = name0, .format = format, .allocator = allocator};
+    }
 
     pub fn parse(
         self: @This(),
@@ -204,6 +218,11 @@ pub const Channel = struct {
             .tdc => {try hptdc.parseChannel(self, &file, h5f, io, allocator, options);},
             else => {return error.UnknownFormat;},
         }
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.allocator.free(self.path);
+        self.allocator.free(self.name);
     }
 };
 

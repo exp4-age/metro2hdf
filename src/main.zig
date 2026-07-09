@@ -35,10 +35,7 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !void {
-    // const arena: std.mem.Allocator = init.arena.allocator();
-    var allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = allocator.deinit();
-    const arena = allocator.allocator();
+    const allocator = std.heap.c_allocator;
     const io = init.io;
 
     var stdout_buffer: [1024]u8 = undefined;
@@ -52,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
     var options = metro.Options{};
 
     // Parse command line arguments
-    var args = try init.minimal.args.iterateAllocator(arena);
+    var args = try init.minimal.args.iterateAllocator(allocator);
     defer args.deinit();
 
     // Skip program name
@@ -107,10 +104,10 @@ pub fn main(init: std.process.Init) !void {
     defer out_dir.close(io);
 
     // Keep track of already touched files
-    var run_table = try metro.RunTable.init(arena);
+    var run_table = try metro.RunTable.init(allocator);
     defer run_table.deinit();
 
-    var walker = try Io.Dir.walk(dir, arena);
+    var walker = try Io.Dir.walk(dir, allocator);
     defer walker.deinit();
 
     while (try walker.next(io)) |entry| {
@@ -125,8 +122,6 @@ pub fn main(init: std.process.Init) !void {
             std.log.info("skipping {s}: {s}", .{entry.path, @errorName(err)});
             continue;
         };
-
-        _ = allocator.detectLeaks();
     }
 
     while (run_table.next()) |run| {
@@ -135,9 +130,11 @@ pub fn main(init: std.process.Init) !void {
 
         // Construct name and path for the hdf5 file
         const filename = try std.fmt.allocPrint(
-            arena, "{s}_{s}_{s}_{s}.h5", .{run.num, run.name, run.date, run.time}
+            allocator, "{s}_{s}_{s}_{s}.h5", .{run.num, run.name, run.date, run.time}
         );
-        const filepath = try std.fs.path.resolve(arena, &[_][]const u8{output_dir, filename});
+        defer allocator.free(filename);
+        const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{output_dir, filename});
+        defer allocator.free(filepath);
 
         // Check if the file already exists
         if (out_dir.access(io, filename, .{.read=true, .write=true})) {
@@ -158,7 +155,8 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Create the output hdf5 file
-        const path = try arena.dupeSentinel(u8, filepath, 0);
+        const path = try allocator.dupeSentinel(u8, filepath, 0);
+        defer allocator.free(path);
         var h5f = hdf5.File.create(path) catch |err| {
             std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
             continue;
@@ -175,7 +173,7 @@ pub fn main(init: std.process.Init) !void {
             try stdout_writer.flush();
 
             // Parse data and write to the hdf5 file
-            ch.parse(&h5f, io, arena, options) catch |err| {
+            ch.parse(&h5f, io, allocator, options) catch |err| {
                 try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
                 try stdout_writer.flush();
                 continue;
@@ -183,7 +181,6 @@ pub fn main(init: std.process.Init) !void {
 
             try stdout_writer.printAscii("done\n", .{});
             try stdout_writer.flush();
-            _ = allocator.detectLeaks();
         }
     }
 }
