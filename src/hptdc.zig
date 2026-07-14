@@ -30,22 +30,8 @@ pub fn parseChannel(
     _ = &version;
 
     // HPTDC mode (HITS, GRPS)
-    const mode = try reader.take(4);
-
-    if (std.mem.eql(u8, mode, "HITS")) {
-        try parseHITS(ch, &file_reader, header_size, h5f, allocator, options);
-    }
-}
-
-pub fn parseHITS(
-    ch: metro.Channel,
-    file_reader: *std.Io.File.Reader,
-    header_size: i32,
-    h5f: *hdf5.File,
-    allocator: std.mem.Allocator,
-    options: metro.Options,
-) !void {
-    var reader = &file_reader.interface;
+    var buf: [5]u8 = undefined;
+    const mode = try std.fmt.bufPrintSentinel(&buf, "{s}", .{try reader.take(4)}, 0);
 
     // Where and how big is the scan table?
     const scan_table_offset = try reader.takeInt(i64, .little);
@@ -64,17 +50,42 @@ pub fn parseHITS(
     // Next should be 'DATA' in supported versions
     if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
-    // Go to scan table start
-    try file_reader.seekTo(@intCast(scan_table_offset));
-
+    // Create and parse scan table
     var scan_table = ScanTable{.allocator = allocator};
     defer scan_table.deinit();
+    try parseScanTable(&file_reader, scan_table_offset, scan_table_size, &scan_table);
 
+    // Create and parse parameter table
+    var param_table = ParamTable{.allocator = allocator};
+    defer param_table.deinit();
+    param_table.addAttr("name", ch.name) catch {};
+    param_table.addAttr("mode", mode) catch {};
+    parseParamTable(&file_reader, param_table_offset, param_table_size, &param_table) catch {};
+
+    if (std.mem.eql(u8, mode, "HITS")) {
+        try parseHITS(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+    } else if (std.mem.eql(u8, mode, "GRPS")) {
+        try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+    } else {
+        return error.UnknownHptdcMode;
+    }
+}
+
+pub fn parseScanTable(
+    file_reader: *std.Io.File.Reader,
+    offset: i64,
+    size: i32,
+    scan_table: *ScanTable,
+) !void {
+    // Go to scan table start
+    try file_reader.seekTo(@intCast(offset));
+
+    var reader = &file_reader.interface;
     var scan_idx: i32 = 0;
 
-    while (scan_idx < scan_table_size) {
-        // Create a new step table
-        var step_table = StepTable{.allocator=allocator};
+    while (scan_idx < size) {
+        // Create a new step table and deinit on error
+        var step_table = StepTable{.allocator=scan_table.allocator};
         errdefer step_table.deinit();
 
         const step_count = try reader.takeInt(i32, .little);
@@ -96,6 +107,80 @@ pub fn parseHITS(
         try scan_table.append(step_table);
         scan_idx += 1;
     }
+}
+
+pub fn parseParamTable(
+    file_reader: *std.Io.File.Reader,
+    offset: i64,
+    size: i32,
+    param_table: *ParamTable,
+) !void {
+    try file_reader.seekTo(@intCast(offset));
+    const table = try file_reader.interface.take(@intCast(size));
+    var params = std.mem.splitScalar(u8, table, '\n');
+    while (params.next()) |line| {
+        var param = std.mem.splitScalar(u8, line, ' ');
+        const name = param.next() orelse continue;
+        const value = param.next() orelse continue;
+        if (param.next() != null) continue;
+        try param_table.addAttr(name, value);
+    }
+}
+
+pub fn parseRaw(
+    ch: metro.Channel,
+    file_reader: *std.Io.File.Reader,
+    h5f: *hdf5.File,
+    scan_table: *ScanTable,
+    param_table: *ParamTable,
+    allocator: std.mem.Allocator,
+    options: metro.Options,
+) !void {
+    var reader = &file_reader.interface;
+
+    var scan_idx: i32 = 0;
+    var buf: [10]u8 = undefined;
+
+    for (scan_table.scans.items) |step_table| {
+        const scan_idx_str = try std.fmt.bufPrintSentinel(&buf, "{d}", .{scan_idx}, 0);
+
+        for (step_table.steps.items) |step| {
+            // Go to the step data
+            try file_reader.seekTo(@intCast(step.data_offset));
+
+            // Check if we are at a step marker
+            if (try reader.takeInt(u32, .little) != 0) return error.MissingMarker;
+            if (try reader.takeInt(u32, .little) != 176) return error.MissingMarker;
+
+            // Skip if there is no data
+            if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
+
+            const n: usize = @intCast(@divExact(step.data_size, 4));
+
+            var hits = try allocator.alloc(u32, n);
+            defer allocator.free(hits);
+
+            for (0..n) |i| {
+                hits[i] = try reader.takeInt(u32, .little);
+            }
+
+            try h5f.writeSimpleDset(
+                u32, hits, 0, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
+        }
+        scan_idx += 1;
+    }
+}
+
+pub fn parseHITS(
+    ch: metro.Channel,
+    file_reader: *std.Io.File.Reader,
+    h5f: *hdf5.File,
+    scan_table: *ScanTable,
+    param_table: *ParamTable,
+    allocator: std.mem.Allocator,
+    options: metro.Options,
+) !void {
+    var reader = &file_reader.interface;
 
     const scan_marker = HptdcHit{
         .time = -1,
@@ -112,15 +197,8 @@ pub fn parseHITS(
         .@"align" = 0,
     };
 
-    scan_idx = 0;
+    var scan_idx: i32 = 0;
     var buf: [10]u8 = undefined;
-
-    // Create and parse parameter table
-    var param_table = ParamTable{.allocator = allocator};
-    defer param_table.deinit();
-    param_table.addAttr("name", ch.name) catch {};
-    param_table.addAttr("mode", "HITS") catch {};
-    parseParamTable(file_reader, param_table_offset, param_table_size, &param_table) catch {};
 
     for (scan_table.scans.items) |step_table| {
         const scan_idx_str = try std.fmt.bufPrintSentinel(&buf, "{d}", .{scan_idx}, 0);
@@ -153,48 +231,6 @@ pub fn parseHITS(
     _ = &scan_marker;
 }
 
-pub fn parseParamTable(
-    file_reader: *std.Io.File.Reader,
-    offset: i64,
-    size: i32,
-    param_table: *ParamTable,
-) !void {
-    try file_reader.seekTo(@intCast(offset));
-    const table = try file_reader.interface.take(@intCast(size));
-    var params = std.mem.splitScalar(u8, table, '\n');
-    while (params.next()) |line| {
-        var param = std.mem.splitScalar(u8, line, ' ');
-        const name = param.next() orelse continue;
-        const value = param.next() orelse continue;
-        if (param.next() != null) continue;
-        try param_table.addAttr(name, value);
-    }
-}
-
-const ParamTable = struct {
-    attrs: std.ArrayList(hdf5.StrAttr) = .empty,
-    allocator: std.mem.Allocator,
-
-    pub fn addAttr(self: *@This(), name: []const u8, value: []const u8) !void {
-        const cname = try self.allocator.dupeSentinel(u8, name, 0);
-        errdefer self.allocator.free(cname);
-        const cvalue = try self.allocator.dupeSentinel(u8, value, 0);
-        errdefer self.allocator.free(cvalue);
-        var attr = try hdf5.StrAttr.init(cname, cvalue);
-        errdefer attr.deinit();
-        try self.attrs.append(self.allocator, attr);
-    }
-
-    pub fn deinit(self: *@This()) void {
-        for (self.attrs.items) |*attr| {
-            self.allocator.free(attr.name);
-            self.allocator.free(attr.value);
-            attr.deinit();
-        }
-        self.attrs.deinit(self.allocator);
-    }
-};
-
 const ScanTable = struct {
     scans: std.ArrayList(StepTable) = .empty,
     allocator: std.mem.Allocator,
@@ -222,10 +258,12 @@ const StepTable = struct {
         data_size: i64,
     ) !void {
         const len = std.mem.findScalar(u8, step_val, 0) orelse step_val.len;
+        const value = try self.allocator.dupeSentinel(u8, step_val[0..len], 0);
+        errdefer self.allocator.free(value);
         try self.steps.append(
             self.allocator,
             .{
-                .value = try self.allocator.dupeSentinel(u8, step_val[0..len], 0),
+                .value = value,
                 .data_offset = data_offset,
                 .data_size = data_size,
             },
@@ -233,7 +271,7 @@ const StepTable = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        for (self.steps.items) |step| {
+        for (self.steps.items) |*step| {
             self.allocator.free(step.value);
         }
         self.steps.deinit(self.allocator);
@@ -246,6 +284,30 @@ const StepEntry = struct {
     data_size: i64,
 };
 
+const ParamTable = struct {
+    attrs: std.ArrayList(hdf5.StrAttr) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn addAttr(self: *@This(), name: []const u8, value: []const u8) !void {
+        const cname = try self.allocator.dupeSentinel(u8, name, 0);
+        errdefer self.allocator.free(cname);
+        const cvalue = try self.allocator.dupeSentinel(u8, value, 0);
+        errdefer self.allocator.free(cvalue);
+        var attr = try hdf5.StrAttr.init(cname, cvalue);
+        errdefer attr.deinit();
+        try self.attrs.append(self.allocator, attr);
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (self.attrs.items) |*attr| {
+            self.allocator.free(attr.name);
+            self.allocator.free(attr.value);
+            attr.deinit();
+        }
+        self.attrs.deinit(self.allocator);
+    }
+};
+
 const HptdcHit = packed struct {
     time: i64,
     channel: u8,
@@ -254,3 +316,9 @@ const HptdcHit = packed struct {
     @"align": i32,
 };
 
+const HptdcDecodedWord = extern struct {
+    type: [2]u8,
+    arg1: i8,
+    arg2: i8,
+    arg3: i32,
+};
