@@ -109,10 +109,10 @@ pub const RunTable = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-         var it = self.map.iterator();
-         while (it.next()) |*entry| {
+        var it = self.map.iterator();
+        while (it.next()) |*entry| {
             entry.value_ptr.deinit();
-         }
+        }
         self.sorting.deinit(self.map.allocator);
         self.map.deinit();
     }
@@ -198,7 +198,7 @@ pub const Channel = struct {
         errdefer allocator.free(path0);
         const name0 = try allocator.dupe(u8, name);
         errdefer allocator.free(name0);
-        return .{.path = path0, .name = name0, .format = format, .allocator = allocator};
+        return .{ .path = path0, .name = name0, .format = format, .allocator = allocator };
     }
 
     pub fn parse(
@@ -209,14 +209,20 @@ pub const Channel = struct {
         options: Options,
     ) !void {
         // Open input file
-        var file = try std.Io.Dir.cwd().openFile(io, self.path, .{.mode=.read_only});
+        var file = try std.Io.Dir.cwd().openFile(io, self.path, .{ .mode = .read_only });
         defer file.close(io);
 
         // Call the parser based on the file format
         switch (self.format) {
-            .txt => {try tsv.parseChannel(self, &file, h5f, io, allocator, options);},
-            .tdc => {try hptdc.parseChannel(self, &file, h5f, io, allocator, options);},
-            else => {return error.UnknownFormat;},
+            .txt => {
+                try tsv.parseChannel(self, &file, h5f, io, allocator, options);
+            },
+            .tdc => {
+                try hptdc.parseChannel(self, &file, h5f, io, allocator, options);
+            },
+            else => {
+                return error.UnknownFormat;
+            },
         }
     }
 

@@ -51,79 +51,23 @@ pub fn parseChannel(
     if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
     // Create and parse scan table
-    var scan_table = ScanTable{.allocator = allocator};
+    var scan_table = ScanTable{ .allocator = allocator };
     defer scan_table.deinit();
-    try parseScanTable(&file_reader, scan_table_offset, scan_table_size, &scan_table);
+    try scan_table.parse(&file_reader, scan_table_offset, scan_table_size);
 
     // Create and parse parameter table
-    var param_table = ParamTable{.allocator = allocator};
+    var param_table = ParamTable{ .allocator = allocator };
     defer param_table.deinit();
     param_table.addAttr("name", ch.name) catch {};
     param_table.addAttr("mode", mode) catch {};
-    parseParamTable(&file_reader, param_table_offset, param_table_size, &param_table) catch {};
+    param_table.parse(&file_reader, param_table_offset, param_table_size) catch {};
 
     if (std.mem.eql(u8, mode, "HITS")) {
-        try parseHITS(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+        try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
         try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else {
         return error.UnknownHptdcMode;
-    }
-}
-
-pub fn parseScanTable(
-    file_reader: *std.Io.File.Reader,
-    offset: i64,
-    size: i32,
-    scan_table: *ScanTable,
-) !void {
-    // Go to scan table start
-    try file_reader.seekTo(@intCast(offset));
-
-    var reader = &file_reader.interface;
-    var scan_idx: i32 = 0;
-
-    while (scan_idx < size) {
-        // Create a new step table and deinit on error
-        var step_table = StepTable{.allocator=scan_table.allocator};
-        errdefer step_table.deinit();
-
-        const step_count = try reader.takeInt(i32, .little);
-        const step_table_size = try reader.takeInt(i32, .little);
-        _ = &step_table_size;
-        var step_idx: i32 = 0;
-
-        while (step_idx < step_count) {
-            const value = try reader.take(32);
-            const data_offset = try reader.takeInt(i64, .little);
-            const data_size = try reader.takeInt(i64, .little);
-            if (data_size < 0 or @mod(data_size, 16) != 0) {
-                return error.CorruptedStepTable;
-            } else {
-                try step_table.append(value, data_offset, data_size);
-            }
-            step_idx += 1;
-        }
-        try scan_table.append(step_table);
-        scan_idx += 1;
-    }
-}
-
-pub fn parseParamTable(
-    file_reader: *std.Io.File.Reader,
-    offset: i64,
-    size: i32,
-    param_table: *ParamTable,
-) !void {
-    try file_reader.seekTo(@intCast(offset));
-    const table = try file_reader.interface.take(@intCast(size));
-    var params = std.mem.splitScalar(u8, table, '\n');
-    while (params.next()) |line| {
-        var param = std.mem.splitScalar(u8, line, ' ');
-        const name = param.next() orelse continue;
-        const value = param.next() orelse continue;
-        if (param.next() != null) continue;
-        try param_table.addAttr(name, value);
     }
 }
 
@@ -164,14 +108,13 @@ pub fn parseRaw(
                 hits[i] = try reader.takeInt(u32, .little);
             }
 
-            try h5f.writeSimpleDset(
-                u32, hits, 0, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
+            try h5f.writeSimpleDset(u32, hits, 0, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
         }
         scan_idx += 1;
     }
 }
 
-pub fn parseHITS(
+pub fn parseHits(
     ch: metro.Channel,
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
@@ -182,14 +125,14 @@ pub fn parseHITS(
 ) !void {
     var reader = &file_reader.interface;
 
-    const scan_marker = HptdcHit{
+    const scan_marker = Hit{
         .time = -1,
         .channel = 0xff,
         .type = 0xa0,
         .bin = 0x0000,
         .@"align" = 0,
     };
-    const step_marker = HptdcHit{
+    const step_marker = Hit{
         .time = -1,
         .channel = 0xff,
         .type = 0xb0,
@@ -208,22 +151,21 @@ pub fn parseHITS(
             try file_reader.seekTo(@intCast(step.data_offset));
 
             // Check if we are at a step marker
-            if (try reader.takeStruct(HptdcHit, .little) != step_marker) return error.MissingMarker;
+            if (try reader.takeStruct(Hit, .little) != step_marker) return error.MissingMarker;
 
             // Skip if there is no data
-            if (step.data_size < @sizeOf(HptdcHit) or @mod(step.data_size, @sizeOf(HptdcHit)) != 0) continue;
+            if (step.data_size < @sizeOf(Hit) or @mod(step.data_size, @sizeOf(Hit)) != 0) continue;
 
-            const n: usize = @intCast(@divExact(step.data_size, @sizeOf(HptdcHit)));
+            const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
 
-            var hits = try allocator.alloc(HptdcHit, n);
+            var hits = try allocator.alloc(Hit, n);
             defer allocator.free(hits);
 
             for (0..n) |i| {
-                hits[i] = try reader.takeStruct(HptdcHit, .little);
+                hits[i] = try reader.takeStruct(Hit, .little);
             }
 
-            try h5f.writeCompoundDset(
-                HptdcHit, hits, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
+            try h5f.writeCompoundDset(Hit, hits, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
         }
         scan_idx += 1;
     }
@@ -237,6 +179,44 @@ const ScanTable = struct {
 
     pub fn append(self: *@This(), step_table: StepTable) !void {
         try self.scans.append(self.allocator, step_table);
+    }
+
+    pub fn parse(
+        self: *@This(),
+        file_reader: *std.Io.File.Reader,
+        offset: i64,
+        size: i32,
+    ) !void {
+        // Go to scan table start
+        try file_reader.seekTo(@intCast(offset));
+
+        var reader = &file_reader.interface;
+        var scan_idx: i32 = 0;
+
+        while (scan_idx < size) {
+            // Create a new step table and deinit on error
+            var step_table = StepTable{ .allocator = self.allocator };
+            errdefer step_table.deinit();
+
+            const step_count = try reader.takeInt(i32, .little);
+            const step_table_size = try reader.takeInt(i32, .little);
+            _ = &step_table_size;
+            var step_idx: i32 = 0;
+
+            while (step_idx < step_count) {
+                const value = try reader.take(32);
+                const data_offset = try reader.takeInt(i64, .little);
+                const data_size = try reader.takeInt(i64, .little);
+                if (data_size < 0 or @mod(data_size, 16) != 0) {
+                    return error.CorruptedStepTable;
+                } else {
+                    try step_table.append(value, data_offset, data_size);
+                }
+                step_idx += 1;
+            }
+            try self.append(step_table);
+            scan_idx += 1;
+        }
     }
 
     pub fn deinit(self: *@This()) void {
@@ -298,6 +278,24 @@ const ParamTable = struct {
         try self.attrs.append(self.allocator, attr);
     }
 
+    pub fn parse(
+        self: *@This(),
+        file_reader: *std.Io.File.Reader,
+        offset: i64,
+        size: i32,
+    ) !void {
+        try file_reader.seekTo(@intCast(offset));
+        const table = try file_reader.interface.take(@intCast(size));
+        var params = std.mem.splitScalar(u8, table, '\n');
+        while (params.next()) |line| {
+            var param = std.mem.splitScalar(u8, line, ' ');
+            const name = param.next() orelse continue;
+            const value = param.next() orelse continue;
+            if (param.next() != null) continue;
+            try self.addAttr(name, value);
+        }
+    }
+
     pub fn deinit(self: *@This()) void {
         for (self.attrs.items) |*attr| {
             self.allocator.free(attr.name);
@@ -308,7 +306,7 @@ const ParamTable = struct {
     }
 };
 
-const HptdcHit = packed struct {
+const Hit = packed struct {
     time: i64,
     channel: u8,
     type: u8,
@@ -316,8 +314,13 @@ const HptdcHit = packed struct {
     @"align": i32,
 };
 
-const HptdcDecodedWord = extern struct {
-    type: [2]u8,
+const RawWord = packed struct {
+    value: u32,
+};
+
+const DecodedWord = packed struct {
+    type1: u8,
+    type2: u8,
     arg1: i8,
     arg2: i8,
     arg3: i32,

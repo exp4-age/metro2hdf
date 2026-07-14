@@ -49,7 +49,7 @@ pub fn parseChannel(
     defer hint_attr.deinit();
     var freq_attr = try hdf5.StrAttr.init("freq", freq);
     defer freq_attr.deinit();
-    var attrs: [3]hdf5.StrAttr = .{name_attr, hint_attr, freq_attr};
+    var attrs: [3]hdf5.StrAttr = .{ name_attr, hint_attr, freq_attr };
 
     // Keep track of scan and step markers in the file
     var scan_marker: [buf_size]u8 = undefined;
@@ -135,7 +135,7 @@ pub fn parseChannel(
             if (std.mem.find(u8, line, ":")) |idx| {
                 @memcpy(step_marker[0..line.len], line);
                 step_idx = step_marker[7..idx];
-                step_val = step_marker[idx+2..line.len];
+                step_val = step_marker[idx + 2 .. line.len];
             } else return error.CorruptedMarker;
         }
     }

@@ -8,8 +8,10 @@ pub fn globMatch(pat: []const u8, str: []const u8) bool {
     var s: [*]const u8 = str.ptr;
 
     outer: while (true) {
-        const c: u8 = s[0]; s += 1;
-        var d: u8 = p[0]; p += 1;
+        const c: u8 = s[0];
+        s += 1;
+        var d: u8 = p[0];
+        p += 1;
 
         switch (d) {
             '?' => { // Wildcard: anything but nul
@@ -28,7 +30,8 @@ pub fn globMatch(pat: []const u8, str: []const u8) bool {
                 const inverted = p[0] == '!';
                 var class = if (inverted) p + 1 else p;
 
-                var a: u8 = class[0]; class += 1;
+                var a: u8 = class[0];
+                class += 1;
 
                 while (true) {
                     var b: u8 = a;
@@ -68,7 +71,8 @@ pub fn globMatch(pat: []const u8, str: []const u8) bool {
 
                     if (a <= c and c <= b) match = true;
 
-                    a = class[0]; class += 1;
+                    a = class[0];
+                    class += 1;
                     if (a == ']') break;
                 }
 
@@ -84,7 +88,8 @@ pub fn globMatch(pat: []const u8, str: []const u8) bool {
                 p = class;
             },
             '\\' => {
-                d = p[0]; p += 1;
+                d = p[0];
+                p += 1;
                 // fallthrough
                 if (c == d) {
                     if (d == 0) return true;

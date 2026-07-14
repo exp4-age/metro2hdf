@@ -91,12 +91,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Get current working directory for glob'ing
-    const dir = try Io.Dir.cwd().openDir(io, ".", .{.iterate=true});
+    const dir = try Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
     defer dir.close(io);
 
     // Try opening output directory
     const out_dir = dir.openDir(io, output_dir, .{}) catch |err| {
-        std.log.err("could not open output directory {s}: {s}", .{output_dir, @errorName(err)});
+        std.log.err("could not open output directory {s}: {s}", .{ output_dir, @errorName(err) });
         try stdout_writer.printAscii(usage, .{});
         try stdout_writer.flush();
         return;
@@ -119,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path) catch |err| {
-            std.log.info("skipping {s}: {s}", .{entry.path, @errorName(err)});
+            std.log.info("skipping {s}: {s}", .{ entry.path, @errorName(err) });
             continue;
         };
     }
@@ -129,28 +129,26 @@ pub fn main(init: std.process.Init) !void {
         try stdout_writer.flush();
 
         // Construct name and path for the hdf5 file
-        const filename = try std.fmt.allocPrint(
-            allocator, "{s}_{s}_{s}_{s}.h5", .{run.num, run.name, run.date, run.time}
-        );
+        const filename = try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
         defer allocator.free(filename);
-        const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{output_dir, filename});
+        const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{ output_dir, filename });
         defer allocator.free(filepath);
 
         // Check if the file already exists
-        if (out_dir.access(io, filename, .{.read=true, .write=true})) {
+        if (out_dir.access(io, filename, .{ .read = true, .write = true })) {
             if (!replace) {
                 std.log.info("skipping {s}: file already exists", .{filepath});
                 continue;
             } else {
                 out_dir.deleteFile(io, filename) catch |err| {
-                    std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
+                    std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
                     continue;
                 };
             }
         } else |err| switch (err) {
             error.FileNotFound => {},
             else => {
-                std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
+                std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
             },
         }
 
@@ -158,7 +156,7 @@ pub fn main(init: std.process.Init) !void {
         const path = try allocator.dupeSentinel(u8, filepath, 0);
         defer allocator.free(path);
         var h5f = hdf5.File.create(path) catch |err| {
-            std.log.err("skipping {s}: {s}", .{filepath, @errorName(err)});
+            std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
             continue;
         };
         defer h5f.close();

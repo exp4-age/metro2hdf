@@ -12,9 +12,7 @@ pub const File = struct {
 
     pub fn create(path: [:0]const u8) !File {
         // Create the file
-        const id = hdf5.H5Fcreate(
-            path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT
-        );
+        const id = hdf5.H5Fcreate(path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
         if (id < 0) return error.H5I_INVALID_HID;
 
         // Create link creation property list for dataset creation
@@ -24,7 +22,7 @@ pub const File = struct {
         // Enable creation of intermediate groups as needed
         if (hdf5.H5Pset_create_intermediate_group(lcpl, 1) < 0) return error.H5I_INVALID_HID;
 
-        return .{.id=id, .lcpl=lcpl};
+        return .{ .id = id, .lcpl = lcpl };
     }
 
     pub fn close(self: *@This()) void {
@@ -64,11 +62,10 @@ pub const File = struct {
         } else {
             if (data.len % shape != 0) return error.InvalidShape;
             const rows = @divExact(data.len, shape);
-            fspace = hdf5.H5Screate_simple(
-                2, &[2]hdf5.hsize_t{@intCast(rows), @intCast(shape)}, null);
+            fspace = hdf5.H5Screate_simple(2, &[2]hdf5.hsize_t{ @intCast(rows), @intCast(shape) }, null);
 
             // Make 2d data column major by writing it in chunks
-            const chunk = [2]hdf5.hsize_t{rows, 1};
+            const chunk = [2]hdf5.hsize_t{ rows, 1 };
             if (hdf5.H5Pset_chunk(dcpl, 2, &chunk) < 0) return error.H5I_INVALID_HID;
         }
         if (fspace < 0) return error.H5I_INVALID_HID;
@@ -79,12 +76,10 @@ pub const File = struct {
 
         // Format path to dataset
         var buf: [1024]u8 = undefined;
-        const name = try std.fmt.bufPrintSentinel(
-            &buf, "{s}/{s}/{s}", .{scan_idx, step_val, channel}, 0);
+        const name = try std.fmt.bufPrintSentinel(&buf, "{s}/{s}/{s}", .{ scan_idx, step_val, channel }, 0);
 
         // Create the dataset
-        const dset = hdf5.H5Dcreate2(
-            self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
+        const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
         if (dset < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Dclose(dset);
 
@@ -140,12 +135,10 @@ pub const File = struct {
 
         // Format path to dataset
         var buf: [1024]u8 = undefined;
-        const name = try std.fmt.bufPrintSentinel(
-            &buf, "{s}/{s}/{s}", .{scan_idx, step_val, channel}, 0);
+        const name = try std.fmt.bufPrintSentinel(&buf, "{s}/{s}/{s}", .{ scan_idx, step_val, channel }, 0);
 
         // Create the dataset
-        const dset = hdf5.H5Dcreate2(
-            self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
+        const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
         if (dset < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Dclose(dset);
 
@@ -181,13 +174,13 @@ pub const File = struct {
         try name_attr.write(root);
 
         // Write date
-        const date = try std.fmt.bufPrintSentinel(&buf, "{s}-{s}-{s}", .{run.date[0..2], run.date[2..4], run.date[4..8]}, 0);
+        const date = try std.fmt.bufPrintSentinel(&buf, "{s}-{s}-{s}", .{ run.date[0..2], run.date[2..4], run.date[4..8] }, 0);
         var date_attr = try StrAttr.init("date", date);
         defer date_attr.deinit();
         try date_attr.write(root);
 
         // Write time
-        const time = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}:{s}", .{run.time[0..2], run.time[2..4], run.time[4..6]}, 0);
+        const time = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}:{s}", .{ run.time[0..2], run.time[2..4], run.time[4..6] }, 0);
         var time_attr = try StrAttr.init("time", time);
         defer time_attr.deinit();
         try time_attr.write(root);
@@ -212,7 +205,7 @@ pub const StrAttr = struct {
         const fspace = hdf5.H5Screate(hdf5.H5S_SCALAR);
         if (fspace < 0) return error.H5I_INVALID_HID;
 
-        return .{.name=name, .value=value, .type_id=type_id, .fspace=fspace};
+        return .{ .name = name, .value = value, .type_id = type_id, .fspace = fspace };
     }
 
     pub fn write(self: *@This(), obj: hdf5.hid_t) !void {
@@ -233,8 +226,7 @@ pub const StrAttr = struct {
         }
 
         // Create attribute
-        const attr = hdf5.H5Acreate2(
-            obj, self.name.ptr, self.type_id, self.fspace, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+        const attr = hdf5.H5Acreate2(obj, self.name.ptr, self.type_id, self.fspace, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
         if (attr < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Aclose(attr);
 
