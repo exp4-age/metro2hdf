@@ -41,8 +41,9 @@ pub const File = struct {
         comptime T: type,
         data: []const T,
         shape: usize,
-        scan_idx: []const u8,
-        step_val: []const u8,
+        scan_idx: usize,
+        step_idx: usize,
+        step_val: ?[]const u8,
         channel: []const u8,
         attrs: []StrAttr,
         options: metro.Options,
@@ -76,7 +77,7 @@ pub const File = struct {
 
         // Format path to dataset
         var buf: [1024]u8 = undefined;
-        const name = try std.fmt.bufPrintSentinel(&buf, "{s}/{s}/{s}", .{ scan_idx, step_val, channel }, 0);
+        const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, channel }, 0);
 
         // Create the dataset
         const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
@@ -89,9 +90,10 @@ pub const File = struct {
         }
 
         // Write the dataset
-        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) {
-            return error.H5DWriteFailed;
-        }
+        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) return error.H5DWriteFailed;
+
+        // Create link for accessing the dataset using the step value
+        if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
 
         _ = &options;
     }
@@ -100,8 +102,9 @@ pub const File = struct {
         self: *@This(),
         comptime T: type,
         data: []const T,
-        scan_idx: []const u8,
-        step_val: []const u8,
+        scan_idx: usize,
+        step_idx: usize,
+        step_val: ?[]const u8,
         channel: []const u8,
         attrs: []StrAttr,
         options: metro.Options,
@@ -135,7 +138,7 @@ pub const File = struct {
 
         // Format path to dataset
         var buf: [1024]u8 = undefined;
-        const name = try std.fmt.bufPrintSentinel(&buf, "{s}/{s}/{s}", .{ scan_idx, step_val, channel }, 0);
+        const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, channel }, 0);
 
         // Create the dataset
         const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
@@ -148,9 +151,30 @@ pub const File = struct {
         }
 
         // Write the dataset
-        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) {
-            return error.WriteFailed;
+        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) return error.H5DwriteFailed;
+
+        if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
+    }
+
+    fn createLink(self: *@This(), scan_idx: usize, step_idx: usize, step_val: []const u8) !void {
+        // Format target path for the link
+        var target_buf: [1024]u8 = undefined;
+        const target = try std.fmt.bufPrintSentinel(&target_buf, "{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
+
+        // Format link path using the step value
+        var link_buf: [1024]u8 = undefined;
+        const link = try std.fmt.bufPrintSentinel(&link_buf, "{d}/by_val/{s}", .{ scan_idx, step_val }, 0);
+
+        // Check if the by_val group exists first and then the link
+        var buf: [1024]u8 = undefined;
+        const by_val = try std.fmt.bufPrintSentinel(&buf, "{d}/by_val", .{ scan_idx }, 0);
+        if (hdf5.H5Lexists(self.id, by_val.ptr, hdf5.H5P_DEFAULT) > 0) {
+            if (hdf5.H5Lexists(self.id, link.ptr, hdf5.H5P_DEFAULT) > 0) return;
         }
+
+        // Create the link
+        if (hdf5.H5Lcreate_hard(self.id, target.ptr, self.id, link.ptr, self.lcpl, hdf5.H5P_DEFAULT) < 0) return error.H5LcreateFailed;
+
     }
 
     pub fn writeRootAttrs(self: *@This(), run: metro.Run) !void {

@@ -50,11 +50,6 @@ pub fn parseChannel(
     // Next should be 'DATA' in supported versions
     if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
-    // Create and parse scan table
-    var scan_table = ScanTable{ .allocator = allocator };
-    defer scan_table.deinit();
-    try scan_table.parse(&file_reader, scan_table_offset, scan_table_size);
-
     // Create and parse parameter table
     var param_table = ParamTable{ .allocator = allocator };
     defer param_table.deinit();
@@ -62,9 +57,15 @@ pub fn parseChannel(
     param_table.addAttr("mode", mode) catch {};
     param_table.parse(&file_reader, param_table_offset, param_table_size) catch {};
 
+    // Create the scan table
+    var scan_table = ScanTable{ .allocator = allocator };
+    defer scan_table.deinit();
+
     if (std.mem.eql(u8, mode, "HITS")) {
+        try scan_table.parse(Hit, &file_reader, scan_table_offset, scan_table_size);
         try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
+        try scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size);
         try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else {
         return error.UnknownHptdcMode;
@@ -82,13 +83,8 @@ pub fn parseRaw(
 ) !void {
     var reader = &file_reader.interface;
 
-    var scan_idx: i32 = 0;
-    var buf: [10]u8 = undefined;
-
-    for (scan_table.scans.items) |step_table| {
-        const scan_idx_str = try std.fmt.bufPrintSentinel(&buf, "{d}", .{scan_idx}, 0);
-
-        for (step_table.steps.items) |step| {
+    for (scan_table.scans.items, 0..) |step_table, scan_idx| {
+        for (step_table.steps.items, 0..) |step, step_idx| {
             // Go to the step data
             try file_reader.seekTo(@intCast(step.data_offset));
 
@@ -101,16 +97,15 @@ pub fn parseRaw(
 
             const n: usize = @intCast(@divExact(step.data_size, 4));
 
-            var hits = try allocator.alloc(u32, n);
-            defer allocator.free(hits);
+            var words = try allocator.alloc(u32, n);
+            defer allocator.free(words);
 
             for (0..n) |i| {
-                hits[i] = try reader.takeInt(u32, .little);
+                words[i] = try reader.takeInt(u32, .little);
             }
 
-            try h5f.writeSimpleDset(u32, hits, 0, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
+            try h5f.writeSimpleDset(u32, words, 0, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
         }
-        scan_idx += 1;
     }
 }
 
@@ -140,13 +135,8 @@ pub fn parseHits(
         .@"align" = 0,
     };
 
-    var scan_idx: i32 = 0;
-    var buf: [10]u8 = undefined;
-
-    for (scan_table.scans.items) |step_table| {
-        const scan_idx_str = try std.fmt.bufPrintSentinel(&buf, "{d}", .{scan_idx}, 0);
-
-        for (step_table.steps.items) |step| {
+    for (scan_table.scans.items, 0..) |step_table, scan_idx| {
+        for (step_table.steps.items, 0..) |step, step_idx| {
             // Go to the step data
             try file_reader.seekTo(@intCast(step.data_offset));
 
@@ -165,9 +155,8 @@ pub fn parseHits(
                 hits[i] = try reader.takeStruct(Hit, .little);
             }
 
-            try h5f.writeCompoundDset(Hit, hits, scan_idx_str, step.value, ch.name, param_table.attrs.items, options);
+            try h5f.writeCompoundDset(Hit, hits, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
         }
-        scan_idx += 1;
     }
 
     _ = &scan_marker;
@@ -183,6 +172,7 @@ const ScanTable = struct {
 
     pub fn parse(
         self: *@This(),
+        comptime T: type,
         file_reader: *std.Io.File.Reader,
         offset: i64,
         size: i32,
@@ -207,7 +197,7 @@ const ScanTable = struct {
                 const value = try reader.take(32);
                 const data_offset = try reader.takeInt(i64, .little);
                 const data_size = try reader.takeInt(i64, .little);
-                if (data_size < 0 or @mod(data_size, 16) != 0) {
+                if (data_size < 0 or @mod(data_size, @sizeOf(T)) != 0) {
                     return error.CorruptedStepTable;
                 } else {
                     try step_table.append(value, data_offset, data_size);

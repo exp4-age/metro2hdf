@@ -53,9 +53,9 @@ pub fn parseChannel(
 
     // Keep track of scan and step markers in the file
     var scan_marker: [buf_size]u8 = undefined;
-    var scan_idx: ?[]u8 = null;
+    var scan_idx: ?usize = null;
     var step_marker: [buf_size]u8 = undefined;
-    var step_idx: ?[]u8 = null;
+    var step_idx: ?usize = null;
     var step_val: ?[]u8 = null;
 
     // Store data in array list
@@ -94,6 +94,7 @@ pub fn parseChannel(
                     data.items,
                     shape,
                     scan_idx.?,
+                    step_idx.?,
                     step_val.?,
                     ch.name,
                     &attrs,
@@ -104,7 +105,7 @@ pub fn parseChannel(
 
             // Update scan index and reset step marker
             @memcpy(scan_marker[0..line.len], line);
-            scan_idx = scan_marker[7..line.len];
+            scan_idx = std.fmt.parseInt(usize, scan_marker[7..line.len], 10) catch null;
             step_idx = null;
 
             // Get next line
@@ -123,6 +124,7 @@ pub fn parseChannel(
                     data.items,
                     shape,
                     scan_idx.?,
+                    step_idx.?,
                     step_val.?,
                     ch.name,
                     &attrs,
@@ -134,7 +136,7 @@ pub fn parseChannel(
             // Find start of step value in line and update
             if (std.mem.find(u8, line, ":")) |idx| {
                 @memcpy(step_marker[0..line.len], line);
-                step_idx = step_marker[7..idx];
+                step_idx = std.fmt.parseInt(usize, step_marker[7..idx], 10) catch null;
                 step_val = step_marker[idx + 2 .. line.len];
             } else return error.CorruptedMarker;
         }
@@ -147,6 +149,7 @@ pub fn parseChannel(
             data.items,
             shape,
             scan_idx.?,
+            step_idx.?,
             step_val.?,
             ch.name,
             &attrs,
