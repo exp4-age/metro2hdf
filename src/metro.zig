@@ -220,6 +220,10 @@ pub const Channel = struct {
             .tdc => {
                 try hptdc.parseChannel(self, &file, h5f, io, allocator, options);
             },
+            .jpg => {
+                // Metro screenshot: return without error
+                return;
+            },
             else => {
                 return error.UnknownFormat;
             },

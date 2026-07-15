@@ -80,19 +80,16 @@ pub const File = struct {
         const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, channel }, 0);
 
         // Create the dataset
-        const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
-        if (dset < 0) return error.H5I_INVALID_HID;
+        const dset = try self.createDset(name, type_id, fspace, self.lcpl, dcpl);
         defer _ = hdf5.H5Dclose(dset);
 
         // Write attributes
-        for (attrs) |*attr| {
-            try attr.write(dset);
-        }
+        for (attrs) |*attr| { try attr.write(dset); }
 
         // Write the dataset
-        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) return error.H5DWriteFailed;
+        try File.writeDset(T, data, dset, type_id);
 
-        // Create link for accessing the dataset using the step value
+        // Create a link for accessing the dataset using the step value
         if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
 
         _ = &options;
@@ -114,7 +111,7 @@ pub const File = struct {
         // Compile error if T has no fields
         if (@sizeOf(T) == 0) @compileError("Zero-sized structs are not supported");
 
-        // Createa 1d dataspace
+        // Create a 1d dataspace
         const dims = [1]hdf5.hsize_t{@intCast(data.len)};
         const fspace = hdf5.H5Screate_simple(1, &dims, null);
         if (fspace < 0) return error.H5I_INVALID_HID;
@@ -141,19 +138,46 @@ pub const File = struct {
         const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, channel }, 0);
 
         // Create the dataset
-        const dset = hdf5.H5Dcreate2(self.id, name, type_id, fspace, self.lcpl, dcpl, hdf5.H5P_DEFAULT);
-        if (dset < 0) return error.H5I_INVALID_HID;
+        const dset = try self.createDset(name, type_id, fspace, self.lcpl, dcpl);
         defer _ = hdf5.H5Dclose(dset);
 
         // Write attributes
-        for (attrs) |*attr| {
-            try attr.write(dset);
-        }
+        for (attrs) |*attr| { try attr.write(dset); }
 
         // Write the dataset
-        if (hdf5.H5Dwrite(dset, type_id, hdf5.H5S_ALL, hdf5.H5S_ALL, hdf5.H5P_DEFAULT, data.ptr) < 0) return error.H5DwriteFailed;
+        try File.writeDset(T, data, dset, type_id);
 
+        // Create a link for accessing the dataset using the step value
         if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
+    }
+
+    fn createDset(
+        self: *@This(),
+        name: [:0]const u8,
+        type_id: hdf5.hid_t,
+        space: hdf5.hid_t,
+        lcpl: hdf5.hid_t,
+        dcpl: hdf5.hid_t,
+    ) !hdf5.hid_t {
+        // Default dataset access property list
+        const dapl = hdf5.H5P_DEFAULT;
+        // Create the dataset
+        const dset = hdf5.H5Dcreate2(self.id, name, type_id, space, lcpl, dcpl, dapl);
+        if (dset < 0) return error.H5I_INVALID_HID;
+        return dset;
+    }
+
+    fn writeDset(comptime T: type, data: []const T, dset: hdf5.hid_t, type_id: hdf5.hid_t) !void {
+        // Use file dataspace for the memory dataspace
+        const mem_space = hdf5.H5S_ALL;
+        // Selection in dataspace is set to "all"
+        const file_space = hdf5.H5S_ALL;
+        // Default transfer properties
+        const dxpl = hdf5.H5P_DEFAULT;
+        // Write the data
+        if (hdf5.H5Dwrite(dset, type_id, mem_space, file_space, dxpl, data.ptr) < 0) {
+            return error.H5DwriteFailed;
+        }
     }
 
     fn createLink(self: *@This(), scan_idx: usize, step_idx: usize, step_val: []const u8) !void {
