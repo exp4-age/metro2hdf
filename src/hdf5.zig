@@ -84,7 +84,9 @@ pub const File = struct {
         defer _ = hdf5.H5Dclose(dset);
 
         // Write attributes
-        for (attrs) |*attr| { try attr.write(dset); }
+        for (attrs) |*attr| {
+            try attr.write(dset);
+        }
 
         // Write the dataset
         try File.writeDset(T, data, dset, type_id);
@@ -142,7 +144,9 @@ pub const File = struct {
         defer _ = hdf5.H5Dclose(dset);
 
         // Write attributes
-        for (attrs) |*attr| { try attr.write(dset); }
+        for (attrs) |*attr| {
+            try attr.write(dset);
+        }
 
         // Write the dataset
         try File.writeDset(T, data, dset, type_id);
@@ -191,14 +195,13 @@ pub const File = struct {
 
         // Check if the by_val group exists first and then the link
         var buf: [1024]u8 = undefined;
-        const by_val = try std.fmt.bufPrintSentinel(&buf, "{d}/by_val", .{ scan_idx }, 0);
+        const by_val = try std.fmt.bufPrintSentinel(&buf, "{d}/by_val", .{scan_idx}, 0);
         if (hdf5.H5Lexists(self.id, by_val.ptr, hdf5.H5P_DEFAULT) > 0) {
             if (hdf5.H5Lexists(self.id, link.ptr, hdf5.H5P_DEFAULT) > 0) return;
         }
 
         // Create the link
         if (hdf5.H5Lcreate_hard(self.id, target.ptr, self.id, link.ptr, self.lcpl, hdf5.H5P_DEFAULT) < 0) return error.H5LcreateFailed;
-
     }
 
     pub fn writeRootAttrs(self: *@This(), run: metro.Run) !void {

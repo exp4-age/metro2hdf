@@ -67,7 +67,7 @@ pub fn parseChannel(
     } else if (std.mem.eql(u8, mode, "GRPS")) {
         try scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size);
         if (options.hptdc_sort_events) {
-            try sortEvents(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+            try sortEvents(&file_reader, h5f, &scan_table, &param_table, allocator, options);
         } else if (options.hptdc_decode_words) {
             try parseDecode(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
         } else {
@@ -153,7 +153,6 @@ pub fn parseDecode(
 }
 
 pub fn sortEvents(
-    ch: metro.Channel,
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
     scan_table: *ScanTable,
@@ -162,6 +161,38 @@ pub fn sortEvents(
     options: metro.Options,
 ) !void {
     var reader = &file_reader.interface;
+    const attrs = param_table.attrs.items;
+
+    var events: std.AutoHashMap(Particles, std.ArrayList(i32)) = .init(allocator);
+    defer {
+        var it = events.valueIterator();
+        while (it.next()) |list| list.deinit(allocator);
+        events.deinit();
+    }
+
+    // Add default coincidence categories
+    try events.putNoClobber(.{ .E = 1, .P = 0 }, .empty);
+    try events.putNoClobber(.{ .E = 0, .P = 1 }, .empty);
+    try events.putNoClobber(.{ .E = 2, .P = 0 }, .empty);
+    try events.putNoClobber(.{ .E = 1, .P = 1 }, .empty);
+    try events.putNoClobber(.{ .E = 0, .P = 2 }, .empty);
+    try events.putNoClobber(.{ .E = 3, .P = 0 }, .empty);
+    try events.putNoClobber(.{ .E = 2, .P = 1 }, .empty);
+    try events.putNoClobber(.{ .E = 4, .P = 0 }, .empty);
+
+    // Add coincidence categories added by the user
+    var other = std.mem.splitScalar(u8, options.hptdc_other, ',');
+    while (other.next()) |particles| {
+        const e_count = std.mem.countScalar(u8, particles, 'E');
+        const p_count = std.mem.countScalar(u8, particles, 'P');
+        if (e_count == 0 and p_count == 0) continue;
+        if (e_count > 32 or p_count > 32) return error.TooManyParticles;
+        try events.put(.{ .E = @intCast(e_count), .P = @intCast(p_count) }, .empty);
+    }
+
+    // Keep pointers to the most common coincidence categories
+    const ptr_E = events.getPtr(.{ .E = 1, .P = 0 }).?;
+    const ptr_P = events.getPtr(.{ .E = 0, .P = 1 }).?;
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
@@ -175,16 +206,82 @@ pub fn sortEvents(
             // Skip if there is no data
             if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
 
+            // Get the number of words in this step
             const n: usize = @intCast(@divExact(step.data_size, 4));
 
-            var words = try allocator.alloc(DecodedWord, n);
-            defer allocator.free(words);
+            // Counters for the electron and photon events per bunch
+            var e_count: u8 = 0;
+            var p_count: u8 = 0;
 
-            for (0..n) |i| {
-                words[i] = try DecodedWord.decode(try reader.takeInt(u32, .little));
+            // Buffers for the event times
+            var e_buf: [32]i32 = undefined;
+            var p_buf: [32]i32 = undefined;
+
+            for (0..n) |_| {
+                const raw = try reader.takeInt(u32, .little);
+                const decoded = try DecodedWord.decode(raw);
+                if ((raw >> 24) == 16) {
+                    // Start of new bunch: process last event
+                    // Skip the last event if none or too many were found
+                    if (e_count == 0 and p_count == 0) continue;
+
+                    // Fast access to common coincidence categories
+                    // and use hash otherwise
+                    if (e_count == 1 and p_count == 0) {
+                        try ptr_E.append(allocator, e_buf[0]);
+                    } else if (e_count == 0 and p_count == 1) {
+                        try ptr_P.append(allocator, p_buf[0]);
+                    } else if (events.getPtr(.{ .E = e_count, .P = p_count })) |ptr| {
+                        // Append electron event times first
+                        try ptr.appendSlice(allocator, e_buf[0..e_count]);
+                        // Append photon event times second
+                        try ptr.appendSlice(allocator, p_buf[0..p_count]);
+                    }
+
+                    // Reset counters for the next bunch
+                    e_count = 0;
+                    p_count = 0;
+                } else if ((raw >> 30) == 2) {
+                    // Discard this bunch if maximum coincidence size is exceeded
+                    if (e_count == 32 or p_count == 32) {
+                        e_count = 0;
+                        p_count = 0;
+                        continue;
+                    }
+                    switch (decoded.arg1) {
+                        1 => {
+                            // Add electron to event
+                            e_buf[e_count] = decoded.arg3;
+                            e_count += 1;
+                        },
+                        2 => {
+                            // Add photon to event
+                            p_buf[p_count] = decoded.arg3;
+                            p_count += 1;
+                        },
+                        else => {},
+                    }
+                }
             }
 
-            try h5f.writeCompoundDset(DecodedWord, words, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
+            var it = events.iterator();
+            while (it.next()) |entry| {
+                // Create name for the dataset
+                var name_buf: [64]u8 = undefined;
+                for (0..entry.key_ptr.E) |i| name_buf[i] = 'E';
+                for (0..entry.key_ptr.P) |i| name_buf[i + entry.key_ptr.E] = options.hptdc_event_type;
+                const np = entry.key_ptr.E + entry.key_ptr.P;
+                const name = name_buf[0..np];
+
+                // Set shape to 0 for a single particle
+                const shape = if (np == 1) 0 else np;
+
+                // Write the dataset
+                try h5f.writeSimpleDset(i32, entry.value_ptr.items, shape, scan_idx, step_idx, step.value, name, attrs, options);
+
+                // Clear the list for the next step
+                entry.value_ptr.clearRetainingCapacity();
+            }
         }
     }
 }
@@ -385,7 +482,7 @@ const Hit = packed struct {
 };
 
 const DecodedWord = extern struct {
-    type: [2]u8 = .{'?', '?'},
+    type: [2]u8 = .{ '?', '?' },
     arg1: i8 = 0,
     arg2: i8 = 0,
     arg3: i32 = 0,
@@ -394,7 +491,7 @@ const DecodedWord = extern struct {
         // FL: type_len=2, type_val=2 (top 2 bits == 0b10)
         if ((word >> 30) == 2) {
             return .{
-                .type = .{'F', 'L'},
+                .type = .{ 'F', 'L' },
                 .arg1 = extractInt(i8, word, 29, 24),
                 .arg3 = extractInt(i32, word, 23, 0),
             };
@@ -403,7 +500,7 @@ const DecodedWord = extern struct {
         // RS: type_len=2, type_val=3 (top 2 bits == 0b11)
         if ((word >> 30) == 3) {
             return .{
-                .type = .{'R', 'S'},
+                .type = .{ 'R', 'S' },
                 .arg1 = extractInt(i8, word, 29, 24),
                 .arg3 = extractInt(i32, word, 23, 0),
             };
@@ -412,7 +509,7 @@ const DecodedWord = extern struct {
         // ER: type_len=2, type_val=1 (top 2 bits == 0b01)
         if ((word >> 30) == 1) {
             return .{
-                .type = .{'E', 'R'},
+                .type = .{ 'E', 'R' },
                 .arg1 = extractInt(i8, word, 29, 24),
                 .arg2 = extractInt(i8, word, 23, 16),
                 .arg3 = extractInt(i32, word, 15, 0),
@@ -422,7 +519,7 @@ const DecodedWord = extern struct {
         // GR: type_len=4, type_val=0 (top 4 bits == 0b0000)
         if ((word >> 28) == 0) {
             return .{
-                .type = .{'G', 'R'},
+                .type = .{ 'G', 'R' },
                 .arg1 = extractInt(i8, word, 27, 24),
                 .arg3 = extractInt(i32, word, 23, 0),
             };
@@ -431,7 +528,7 @@ const DecodedWord = extern struct {
         // RL: type_len=8, type_val=16 (top 8 bits == 0b00010000)
         if ((word >> 24) == 16) {
             return .{
-                .type = .{'R', 'L'},
+                .type = .{ 'R', 'L' },
                 .arg3 = extractInt(i32, word, 23, 0),
             };
         }
@@ -439,7 +536,7 @@ const DecodedWord = extern struct {
         // LV: type_len=5, type_val=3 (top 5 bits == 0b00011)
         if ((word >> 27) == 3) {
             return .{
-                .type = .{'L', 'V'},
+                .type = .{ 'L', 'V' },
                 .arg1 = extractInt(i8, word, 26, 21),
                 .arg3 = extractInt(i32, word, 20, 0),
             };
@@ -447,6 +544,11 @@ const DecodedWord = extern struct {
 
         return .{};
     }
+};
+
+const Particles = packed struct {
+    E: u8,
+    P: u8,
 };
 
 fn extractInt(comptime T: type, word: u32, comptime high: u5, comptime low: u5) T {

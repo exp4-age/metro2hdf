@@ -10,6 +10,7 @@ pub const Options = struct {
     hptdc_decode_words: bool = false,
     hptdc_sort_events: bool = false,
     hptdc_other: []const u8 = "",
+    hptdc_event_type: u8 = 'P',
 };
 
 pub const RunTable = struct {

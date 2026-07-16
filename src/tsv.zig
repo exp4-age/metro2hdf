@@ -56,7 +56,9 @@ pub fn parseChannel(
             try param_table.addAttr(line[2..idx], line[idx + 2 ..]);
             reader.toss(line.len + 1);
         } else break;
-    } else |err| { return err; }
+    } else |err| {
+        return err;
+    }
 
     const freq = param_table.attrs.items[2].value;
 

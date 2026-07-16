@@ -29,6 +29,8 @@ const usage =
     \\                                  into its type and argument
     \\                                  (8 bytes per word)
     \\      --hptdc-sort-events         decode words and sort events
+    \\      --hptdc-event-type={EP,EI}  type of recorded particles
+    \\                                  (default: "EP")
     \\      --other=PARTICLES           process the (comma seperated)
     \\                                  coincedence categories when
     \\                                  sorting events in addition to the
@@ -87,6 +89,12 @@ pub fn main(init: std.process.Init) !void {
             continue;
         } else if (std.mem.eql(u8, arg, "--hptdc-sort-events")) {
             options.hptdc_sort_events = true;
+            continue;
+        } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {
+            options.hptdc_event_type = 'P';
+            continue;
+        } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {
+            options.hptdc_event_type = 'I';
             continue;
         } else if (std.mem.startsWith(u8, arg, "--other=")) {
             options.hptdc_sort_events = true;
