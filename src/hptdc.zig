@@ -66,7 +66,9 @@ pub fn parseChannel(
         try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
         try scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size);
-        if (options.hptdc_decode_words) {
+        if (options.hptdc_sort_events) {
+            try sortEvents(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+        } else if (options.hptdc_decode_words) {
             try parseDecode(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
         } else {
             try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
@@ -114,6 +116,43 @@ pub fn parseRaw(
 }
 
 pub fn parseDecode(
+    ch: metro.Channel,
+    file_reader: *std.Io.File.Reader,
+    h5f: *hdf5.File,
+    scan_table: *ScanTable,
+    param_table: *ParamTable,
+    allocator: std.mem.Allocator,
+    options: metro.Options,
+) !void {
+    var reader = &file_reader.interface;
+
+    for (scan_table.scans.items, 0..) |step_table, scan_idx| {
+        for (step_table.steps.items, 0..) |step, step_idx| {
+            // Go to the step data
+            try file_reader.seekTo(@intCast(step.data_offset));
+
+            // Check if we are at a step marker
+            if (try reader.takeInt(u32, .little) != 0) return error.MissingMarker;
+            if (try reader.takeInt(u32, .little) != 176) return error.MissingMarker;
+
+            // Skip if there is no data
+            if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
+
+            const n: usize = @intCast(@divExact(step.data_size, 4));
+
+            var words = try allocator.alloc(DecodedWord, n);
+            defer allocator.free(words);
+
+            for (0..n) |i| {
+                words[i] = try DecodedWord.decode(try reader.takeInt(u32, .little));
+            }
+
+            try h5f.writeCompoundDset(DecodedWord, words, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
+        }
+    }
+}
+
+pub fn sortEvents(
     ch: metro.Channel,
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,

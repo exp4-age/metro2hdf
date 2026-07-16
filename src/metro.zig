@@ -8,6 +8,8 @@ pub const Options = struct {
     chunk_size: usize = 1e5,
     compress: usize = 4,
     hptdc_decode_words: bool = false,
+    hptdc_sort_events: bool = false,
+    hptdc_other: []const u8 = "",
 };
 
 pub const RunTable = struct {

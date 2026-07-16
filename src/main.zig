@@ -23,14 +23,16 @@ const usage =
     \\                                  level (default: 4) from 0 to 9
     \\                                  (no compression to max compression)
     \\
-    \\HPTDC OPTIONS
-    \\      --hptdc-ignore-tables       ignore scan and step tables in the
-    \\                                  TDC file and rebuild them by
-    \\                                  searching for the markers
+    \\HPTDC OPTIONS (GRPS mode only)
     \\      --hptdc-decode-words        decode words generated in certain
     \\                                  operation modes (4 bytes per word)
     \\                                  into its type and argument
     \\                                  (8 bytes per word)
+    \\      --hptdc-sort-events         decode words and sort events
+    \\      --other=PARTICLES           process the (comma seperated)
+    \\                                  coincedence categories when
+    \\                                  sorting events in addition to the
+    \\                                  default categories (e.g. EEEP,EEEEE)
     \\
 ;
 
@@ -80,10 +82,15 @@ pub fn main(init: std.process.Init) !void {
                     continue;
                 }
             } else |_| {}
-        } else if (std.mem.eql(u8, arg, "--hptdc-ignore-tables")) {
-            return error.NotImplemented;
         } else if (std.mem.eql(u8, arg, "--hptdc-decode-words")) {
             options.hptdc_decode_words = true;
+            continue;
+        } else if (std.mem.eql(u8, arg, "--hptdc-sort-events")) {
+            options.hptdc_sort_events = true;
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "--other=")) {
+            options.hptdc_sort_events = true;
+            options.hptdc_other = arg[8..];
             continue;
         }
         try stdout_writer.printAscii(usage, .{});
