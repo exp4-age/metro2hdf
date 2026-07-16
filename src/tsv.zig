@@ -16,9 +16,9 @@ pub fn parseChannel(
     var file_reader = file.readerStreaming(io, &read_buffer);
     var reader = &file_reader.interface;
 
-    // The data channels ...#roi_xspec and ...#roi_yspec have more values per scan
+    // The data channels ..._xspec and ..._yspec have more values per scan
     // than there are steps and I don't know how to write them into the hdf5
-    // file structure, so I skip them here
+    // file structure in a way that makes sense, so I skip them here
     if (std.mem.endsWith(u8, ch.name, "xspec") or std.mem.endsWith(u8, ch.name, "yspec")) {
         return error.UnsupportedChannel;
     }

@@ -295,9 +295,16 @@ fn getH5T(comptime T: type) hdf5.hid_t {
         u8 => hdf5.ZIG_H5T_NATIVE_UCHAR(),
         u16 => hdf5.ZIG_H5T_NATIVE_USHORT(),
         u32 => hdf5.ZIG_H5T_NATIVE_UINT(),
+        i8 => hdf5.ZIG_H5T_NATIVE_SCHAR(),
         i32 => hdf5.ZIG_H5T_NATIVE_INT(),
         i64 => hdf5.ZIG_H5T_NATIVE_LLONG(),
         f64 => hdf5.ZIG_H5T_IEEE_F64LE(),
+        [2]u8 => blk: {
+            const type_id = hdf5.H5Tcopy(hdf5.ZIG_H5T_C_S1());
+            _ = hdf5.H5Tset_size(type_id, 2);
+            _ = hdf5.H5Tset_cset(type_id, hdf5.H5T_CSET_UTF8);
+            break :blk type_id;
+        },
         else => @compileError("No known H5T for: " ++ @typeName(T)),
     };
 }

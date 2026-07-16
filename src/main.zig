@@ -83,7 +83,8 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--hptdc-ignore-tables")) {
             return error.NotImplemented;
         } else if (std.mem.eql(u8, arg, "--hptdc-decode-words")) {
-            return error.NotImplemented;
+            options.hptdc_decode_words = true;
+            continue;
         }
         try stdout_writer.printAscii(usage, .{});
         try stdout_writer.flush();

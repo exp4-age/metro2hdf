@@ -7,6 +7,7 @@ const hdf5 = @import("hdf5.zig");
 pub const Options = struct {
     chunk_size: usize = 1e5,
     compress: usize = 4,
+    hptdc_decode_words: bool = false,
 };
 
 pub const RunTable = struct {

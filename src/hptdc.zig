@@ -66,7 +66,11 @@ pub fn parseChannel(
         try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
         try scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size);
-        try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+        if (options.hptdc_decode_words) {
+            try parseDecode(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+        } else {
+            try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+        }
     } else {
         return error.UnknownHptdcMode;
     }
@@ -105,6 +109,43 @@ pub fn parseRaw(
             }
 
             try h5f.writeSimpleDset(u32, words, 0, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
+        }
+    }
+}
+
+pub fn parseDecode(
+    ch: metro.Channel,
+    file_reader: *std.Io.File.Reader,
+    h5f: *hdf5.File,
+    scan_table: *ScanTable,
+    param_table: *ParamTable,
+    allocator: std.mem.Allocator,
+    options: metro.Options,
+) !void {
+    var reader = &file_reader.interface;
+
+    for (scan_table.scans.items, 0..) |step_table, scan_idx| {
+        for (step_table.steps.items, 0..) |step, step_idx| {
+            // Go to the step data
+            try file_reader.seekTo(@intCast(step.data_offset));
+
+            // Check if we are at a step marker
+            if (try reader.takeInt(u32, .little) != 0) return error.MissingMarker;
+            if (try reader.takeInt(u32, .little) != 176) return error.MissingMarker;
+
+            // Skip if there is no data
+            if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
+
+            const n: usize = @intCast(@divExact(step.data_size, 4));
+
+            var words = try allocator.alloc(DecodedWord, n);
+            defer allocator.free(words);
+
+            for (0..n) |i| {
+                words[i] = try DecodedWord.decode(try reader.takeInt(u32, .little));
+            }
+
+            try h5f.writeCompoundDset(DecodedWord, words, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
         }
     }
 }
@@ -304,14 +345,81 @@ const Hit = packed struct {
     @"align": i32,
 };
 
-const RawWord = packed struct {
-    value: u32,
+const DecodedWord = extern struct {
+    type: [2]u8 = .{'?', '?'},
+    arg1: i8 = 0,
+    arg2: i8 = 0,
+    arg3: i32 = 0,
+
+    pub fn decode(word: u32) !DecodedWord {
+        // FL: type_len=2, type_val=2 (top 2 bits == 0b10)
+        if ((word >> 30) == 2) {
+            return .{
+                .type = .{'F', 'L'},
+                .arg1 = extractInt(i8, word, 29, 24),
+                .arg3 = extractInt(i32, word, 23, 0),
+            };
+        }
+
+        // RS: type_len=2, type_val=3 (top 2 bits == 0b11)
+        if ((word >> 30) == 3) {
+            return .{
+                .type = .{'R', 'S'},
+                .arg1 = extractInt(i8, word, 29, 24),
+                .arg3 = extractInt(i32, word, 23, 0),
+            };
+        }
+
+        // ER: type_len=2, type_val=1 (top 2 bits == 0b01)
+        if ((word >> 30) == 1) {
+            return .{
+                .type = .{'E', 'R'},
+                .arg1 = extractInt(i8, word, 29, 24),
+                .arg2 = extractInt(i8, word, 23, 16),
+                .arg3 = extractInt(i32, word, 15, 0),
+            };
+        }
+
+        // GR: type_len=4, type_val=0 (top 4 bits == 0b0000)
+        if ((word >> 28) == 0) {
+            return .{
+                .type = .{'G', 'R'},
+                .arg1 = extractInt(i8, word, 27, 24),
+                .arg3 = extractInt(i32, word, 23, 0),
+            };
+        }
+
+        // RL: type_len=8, type_val=16 (top 8 bits == 0b00010000)
+        if ((word >> 24) == 16) {
+            return .{
+                .type = .{'R', 'L'},
+                .arg3 = extractInt(i32, word, 23, 0),
+            };
+        }
+
+        // LV: type_len=5, type_val=3 (top 5 bits == 0b00011)
+        if ((word >> 27) == 3) {
+            return .{
+                .type = .{'L', 'V'},
+                .arg1 = extractInt(i8, word, 26, 21),
+                .arg3 = extractInt(i32, word, 20, 0),
+            };
+        }
+
+        return .{};
+    }
 };
 
-const DecodedWord = packed struct {
-    type1: u8,
-    type2: u8,
-    arg1: i8,
-    arg2: i8,
-    arg3: i32,
-};
+fn extractInt(comptime T: type, word: u32, comptime high: u5, comptime low: u5) T {
+    const width: u5 = high - low;
+    comptime {
+        const info = @typeInfo(T);
+        if (info != .int) @compileError("T must be an integer type");
+        if (high <= low) @compileError("high must be > low");
+        const bitwidth = if (info.int.signedness == .unsigned) info.int.bits else info.int.bits - 1;
+        if (width > bitwidth) @compileError("T is too narrow for given width");
+    }
+    const mask: u32 = @intCast((@as(u64, 1) << width) - 1);
+    const value: u32 = (word >> low) & mask;
+    return @intCast(value);
+}
