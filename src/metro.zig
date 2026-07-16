@@ -68,6 +68,9 @@ pub const RunTable = struct {
         // Parse the file extension
         const format = try FileFormat.parse(ext);
 
+        // Found metro screenshot: skip without error
+        if (format == .jpg) return;
+
         // Combination of num, name, date and time should uniquely identify a run
         const run_hash = hash.final();
 
@@ -223,10 +226,6 @@ pub const Channel = struct {
             },
             .tdc => {
                 try hptdc.parseChannel(self, &file, h5f, io, allocator, options);
-            },
-            .jpg => {
-                // Metro screenshot: return without error
-                return;
             },
             else => {
                 return error.UnknownFormat;
