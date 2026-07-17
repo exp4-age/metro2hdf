@@ -33,9 +33,6 @@ const usage =
     \\      --hptdc-sort-events         decode words and sort events
     \\      --hptdc-event-type={EP,EI}  type of recorded particles
     \\                                  (default: "EP")
-    \\      --other=PARTICLES           add a coincedence category to the
-    \\                                  sorting of events, e.g. 3E1P, 5E
-    \\                                  (may be specified more than once)
     \\
 ;
 
@@ -54,7 +51,6 @@ pub fn main(init: std.process.Init) !void {
     var exclude: std.ArrayList([]const u8) = .empty;
     defer exclude.deinit(allocator);
     var options = metro.Options{};
-    defer options.deinit(allocator);
 
     // Parse command line arguments
     var args = try init.minimal.args.iterateAllocator(allocator);
@@ -105,10 +101,6 @@ pub fn main(init: std.process.Init) !void {
             continue;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {
             options.hptdc_event_type = 'I';
-            continue;
-        } else if (std.mem.startsWith(u8, arg, "--other=")) {
-            options.hptdc_sort_events = true;
-            try options.hptdc_other.append(allocator, arg[8..]);
             continue;
         }
         try stdout_writer.printAscii(usage, .{});

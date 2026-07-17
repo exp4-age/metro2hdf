@@ -163,46 +163,15 @@ fn sortEvents(
     var reader = &file_reader.interface;
     const attrs = param_table.attrs.items;
 
-    var events: std.AutoHashMap(Particles, std.ArrayList(i32)) = .init(allocator);
-    defer {
-        var it = events.valueIterator();
-        while (it.next()) |list| list.deinit(allocator);
-        events.deinit();
-    }
+    // Event type P or I for either EP or EI coincidences
+    const p2 = options.hptdc_event_type;
 
-    // Add default coincidence categories
-    try events.putNoClobber(.{ .E = 1, .P = 0 }, .empty);
-    try events.putNoClobber(.{ .E = 0, .P = 1 }, .empty);
-    try events.putNoClobber(.{ .E = 2, .P = 0 }, .empty);
-    try events.putNoClobber(.{ .E = 1, .P = 1 }, .empty);
-    try events.putNoClobber(.{ .E = 0, .P = 2 }, .empty);
-    try events.putNoClobber(.{ .E = 3, .P = 0 }, .empty);
-    try events.putNoClobber(.{ .E = 2, .P = 1 }, .empty);
-    try events.putNoClobber(.{ .E = 4, .P = 0 }, .empty);
+    // Maximum number of particles per paritcle type
+    const max_count: usize = 9;
 
-    // Add coincidence categories added by the user
-    for (options.hptdc_other.items) |particles| {
-        var e_count: usize = 0;
-        var p_count: usize = 0;
-
-        if (std.mem.findScalar(u8, particles, 'E')) |e_idx| {
-            var idx: usize = e_idx;
-            while (idx > 0 and std.ascii.isDigit(particles[idx - 1])) idx -= 1;
-            e_count = try std.fmt.parseInt(usize, particles[idx..e_idx], 10);
-        }
-        if (std.mem.findScalar(u8, particles, options.hptdc_event_type)) |p_idx| {
-            var idx: usize = p_idx;
-            while (idx > 0 and std.ascii.isDigit(particles[idx - 1])) idx -= 1;
-            p_count = try std.fmt.parseInt(usize, particles[idx..p_idx], 10);
-        }
-        if (e_count == 0 and p_count == 0) continue;
-        if (e_count > 32 or p_count > 32) return error.TooManyParticles;
-        try events.put(.{ .E = @intCast(e_count), .P = @intCast(p_count) }, .empty);
-    }
-
-    // Keep pointers to the most common coincidence categories
-    const ptr_E = events.getPtr(.{ .E = 1, .P = 0 }).?;
-    const ptr_P = events.getPtr(.{ .E = 0, .P = 1 }).?;
+    var events: [max_count + 1][max_count + 1]std.ArrayList(i32) = undefined;
+    for (&events) |*row| { for (row) |*ev| ev.* = .empty; }
+    defer for (&events) |*row| { for (row) |*ev| ev.deinit(allocator); };
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
@@ -220,12 +189,12 @@ fn sortEvents(
             const n: usize = @intCast(@divExact(step.data_size, 4));
 
             // Counters for the electron and photon events per bunch
-            var e_count: u8 = 0;
-            var p_count: u8 = 0;
+            var e_count: usize = 0;
+            var p_count: usize = 0;
 
             // Buffers for the event times
-            var e_buf: [32]i32 = undefined;
-            var p_buf: [32]i32 = undefined;
+            var e_buf: [max_count]i32 = undefined;
+            var p_buf: [max_count]i32 = undefined;
 
             for (0..n) |_| {
                 const raw = try reader.takeInt(u32, .little);
@@ -234,39 +203,29 @@ fn sortEvents(
                     // Start of new bunch: process last event
                     // Skip the last event if none or too many were found
                     if (e_count == 0 and p_count == 0) continue;
-
-                    // Fast access to common coincidence categories
-                    // and use hash otherwise
-                    if (e_count == 1 and p_count == 0) {
-                        try ptr_E.append(allocator, e_buf[0]);
-                    } else if (e_count == 0 and p_count == 1) {
-                        try ptr_P.append(allocator, p_buf[0]);
-                    } else if (events.getPtr(.{ .E = e_count, .P = p_count })) |ptr| {
-                        // Append electron event times first
-                        try ptr.appendSlice(allocator, e_buf[0..e_count]);
-                        // Append photon event times second
-                        try ptr.appendSlice(allocator, p_buf[0..p_count]);
+                    if (e_count > max_count or p_count > max_count) {
+                        e_count = 0;
+                        p_count = 0;
+                        continue;
                     }
+
+                    const ev = &events[e_count][p_count];
+                    try ev.appendSlice(allocator, e_buf[0..e_count]);
+                    try ev.appendSlice(allocator, p_buf[0..p_count]);
 
                     // Reset counters for the next bunch
                     e_count = 0;
                     p_count = 0;
                 } else if ((raw >> 30) == 2) {
-                    // Discard this bunch if maximum coincidence size is exceeded
-                    if (e_count == 32 or p_count == 32) {
-                        e_count = 0;
-                        p_count = 0;
-                        continue;
-                    }
                     switch (decoded.arg1) {
                         1 => {
                             // Add electron to event
-                            e_buf[e_count] = decoded.arg3;
+                            if (e_count < max_count) e_buf[e_count] = decoded.arg3;
                             e_count += 1;
                         },
                         2 => {
                             // Add photon to event
-                            p_buf[p_count] = decoded.arg3;
+                            if (p_count < max_count) p_buf[p_count] = decoded.arg3;
                             p_count += 1;
                         },
                         else => {},
@@ -274,34 +233,31 @@ fn sortEvents(
                 }
             }
 
-            var it = events.iterator();
-            while (it.next()) |entry| {
-                // Skip if not events where found for this category
-                if (entry.value_ptr.items.len == 0) continue;
+            for (&events, 0..) |*row, i| {
+                for (row, 0..) |*ev, j| {
+                    if (i == 0 and j == 0) continue;
 
-                // Event coincidence category
-                const ev = entry.key_ptr;
+                    // Skip if no events where found for this category
+                    if (ev.items.len == 0) continue;
 
-                // Event type P or I for either EP or EI coincidences
-                const p2 = options.hptdc_event_type;
+                    // Create name for the dataset
+                    var name_buf: [8]u8 = undefined;
+                    var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{i, j, p2});
+                    if (j == 0) {
+                        name = try std.fmt.bufPrint(&name_buf, "{d}E", .{i});
+                    } else if (i == 0) {
+                        name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{j, p2});
+                    }
 
-                // Create name for the dataset
-                var name_buf: [8]u8 = undefined;
-                var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{ev.E, ev.P, p2});
-                if (ev.P == 0) {
-                    name = try std.fmt.bufPrint(&name_buf, "{d}E", .{ev.E});
-                } else if (ev.E == 0) {
-                    name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{ev.P, p2});
+                    // Set shape to 0 for a single particle
+                    const shape = if (i + j == 1) 0 else i + j;
+
+                    // Write the dataset
+                    try h5f.writeSimpleDset(i32, ev.items, shape, scan_idx, step_idx, step.value, name, attrs, options);
+
+                    // Clear the list for the next step
+                    ev.clearRetainingCapacity();
                 }
-
-                // Set shape to 0 for a single particle
-                const shape = if (ev.E + ev.P == 1) 0 else ev.E + ev.P;
-
-                // Write the dataset
-                try h5f.writeSimpleDset(i32, entry.value_ptr.items, shape, scan_idx, step_idx, step.value, name, attrs, options);
-
-                // Clear the list for the next step
-                entry.value_ptr.clearRetainingCapacity();
             }
         }
     }

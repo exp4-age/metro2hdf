@@ -10,12 +10,7 @@ pub const Options = struct {
     compress: usize = 4,
     hptdc_decode_words: bool = false,
     hptdc_sort_events: bool = false,
-    hptdc_other: std.ArrayList([]const u8) = .empty,
     hptdc_event_type: u8 = 'P',
-
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-        self.hptdc_other.deinit(allocator);
-    }
 };
 
 pub const RunTable = struct {
