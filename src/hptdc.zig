@@ -266,15 +266,23 @@ fn sortEvents(
 
             var it = events.iterator();
             while (it.next()) |entry| {
+                // Event coincidence category
+                const ev = entry.key_ptr;
+
+                // Event type P or I for either EP or EI coincidences
+                const p2 = options.hptdc_event_type;
+
                 // Create name for the dataset
-                var name_buf: [64]u8 = undefined;
-                for (0..entry.key_ptr.E) |i| name_buf[i] = 'E';
-                for (0..entry.key_ptr.P) |i| name_buf[i + entry.key_ptr.E] = options.hptdc_event_type;
-                const np = entry.key_ptr.E + entry.key_ptr.P;
-                const name = name_buf[0..np];
+                var name_buf: [8]u8 = undefined;
+                var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{ev.E, ev.P, p2});
+                if (ev.P == 0) {
+                    name = try std.fmt.bufPrint(&name_buf, "{d}E", .{ev.E});
+                } else if (ev.E == 0) {
+                    name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{ev.P, p2});
+                }
 
                 // Set shape to 0 for a single particle
-                const shape = if (np == 1) 0 else np;
+                const shape = if (ev.E + ev.P == 1) 0 else ev.E + ev.P;
 
                 // Write the dataset
                 try h5f.writeSimpleDset(i32, entry.value_ptr.items, shape, scan_idx, step_idx, step.value, name, attrs, options);
