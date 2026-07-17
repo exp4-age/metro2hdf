@@ -191,14 +191,10 @@ pub const File = struct {
 
         // Format link path using the step value
         var link_buf: [1024]u8 = undefined;
-        const link = try std.fmt.bufPrintSentinel(&link_buf, "{d}/by_val/{s}", .{ scan_idx, step_val }, 0);
+        const link = try std.fmt.bufPrintSentinel(&link_buf, "{d}/{s}", .{ scan_idx, step_val }, 0);
 
-        // Check if the by_val group exists first and then the link
-        var buf: [1024]u8 = undefined;
-        const by_val = try std.fmt.bufPrintSentinel(&buf, "{d}/by_val", .{scan_idx}, 0);
-        if (hdf5.H5Lexists(self.id, by_val.ptr, hdf5.H5P_DEFAULT) > 0) {
-            if (hdf5.H5Lexists(self.id, link.ptr, hdf5.H5P_DEFAULT) > 0) return;
-        }
+        // Check if the link already exists
+        if (hdf5.H5Lexists(self.id, link.ptr, hdf5.H5P_DEFAULT) > 0) return;
 
         // Create the link
         if (hdf5.H5Lcreate_hard(self.id, target.ptr, self.id, link.ptr, self.lcpl, hdf5.H5P_DEFAULT) < 0) return error.H5LcreateFailed;
