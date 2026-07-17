@@ -181,10 +181,20 @@ fn sortEvents(
     try events.putNoClobber(.{ .E = 4, .P = 0 }, .empty);
 
     // Add coincidence categories added by the user
-    var other = std.mem.splitScalar(u8, options.hptdc_other, ',');
-    while (other.next()) |particles| {
-        const e_count = std.mem.countScalar(u8, particles, 'E');
-        const p_count = std.mem.countScalar(u8, particles, 'P');
+    for (options.hptdc_other.items) |particles| {
+        var e_count: usize = 0;
+        var p_count: usize = 0;
+
+        if (std.mem.findScalar(u8, particles, 'E')) |e_idx| {
+            var idx: usize = e_idx;
+            while (idx > 0 and std.ascii.isDigit(particles[idx - 1])) idx -= 1;
+            e_count = try std.fmt.parseInt(usize, particles[idx..e_idx], 10);
+        }
+        if (std.mem.findScalar(u8, particles, options.hptdc_event_type)) |p_idx| {
+            var idx: usize = p_idx;
+            while (idx > 0 and std.ascii.isDigit(particles[idx - 1])) idx -= 1;
+            p_count = try std.fmt.parseInt(usize, particles[idx..p_idx], 10);
+        }
         if (e_count == 0 and p_count == 0) continue;
         if (e_count > 32 or p_count > 32) return error.TooManyParticles;
         try events.put(.{ .E = @intCast(e_count), .P = @intCast(p_count) }, .empty);
@@ -266,6 +276,9 @@ fn sortEvents(
 
             var it = events.iterator();
             while (it.next()) |entry| {
+                // Skip if not events where found for this category
+                if (entry.value_ptr.items.len == 0) continue;
+
                 // Event coincidence category
                 const ev = entry.key_ptr;
 
