@@ -34,20 +34,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install zig and HDF5 (Linux)
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Install HDF5 (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zig libhdf5-dev
+        run: sudo apt-get update && sudo apt-get install -y libhdf5-dev
 
       - name: Install HDF5 (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install zig hdf5
+          brew install hdf5
           echo "HDF5_ROOT=$(brew --prefix hdf5)" >> "$GITHUB_ENV"
 
       - name: Install HDF5 (Windows)
         if: runner.os == 'Windows'
         run: |
-          choco install --no-progress zig hdf5 -y
+          choco install --no-progress hdf5 -y
           echo "HDF5_ROOT=C:\Program Files\HDF_Group\HDF5" >> $env:GITHUB_ENV
 
       - name: Build
