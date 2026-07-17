@@ -12,6 +12,8 @@ const usage =
     \\                                  directory (default: ".")
     \\      --glob=GLOB                 glob string for selecting metro run
     \\                                  files (default: "*")
+    \\  -e, --exclude=CHANNEL           exclude channel from processing
+    \\                                  (can be a glob string)
     \\      --replace                   overwrite existing files
     \\      --help                      show this help and exit
     \\
@@ -31,10 +33,9 @@ const usage =
     \\      --hptdc-sort-events         decode words and sort events
     \\      --hptdc-event-type={EP,EI}  type of recorded particles
     \\                                  (default: "EP")
-    \\      --other=PARTICLES           process the (comma seperated)
-    \\                                  coincedence categories when
-    \\                                  sorting events in addition to the
-    \\                                  default categories (e.g. EEEP,EEEEE)
+    \\      --other=PARTICLES           add a coincedence category to the
+    \\                                  sorting of events, e.g. 3E1P, 5E
+    \\                                  (may be specified more than once)
     \\
 ;
 
@@ -50,7 +51,10 @@ pub fn main(init: std.process.Init) !void {
     var pattern: []const u8 = "*";
     var output_dir: []const u8 = ".";
     var replace = false;
+    var exclude: std.ArrayList([]const u8) = .empty;
+    defer exclude.deinit(allocator);
     var options = metro.Options{};
+    defer options.deinit(allocator);
 
     // Parse command line arguments
     var args = try init.minimal.args.iterateAllocator(allocator);
@@ -68,6 +72,12 @@ pub fn main(init: std.process.Init) !void {
             continue;
         } else if (std.mem.startsWith(u8, arg, "-o=")) {
             output_dir = arg[3..];
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "--exclude=")) {
+            try exclude.append(allocator, arg[10..]);
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "-e=")) {
+            try exclude.append(allocator, arg[3..]);
             continue;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
@@ -98,7 +108,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         } else if (std.mem.startsWith(u8, arg, "--other=")) {
             options.hptdc_sort_events = true;
-            options.hptdc_other = arg[8..];
+            try options.hptdc_other.append(allocator, arg[8..]);
             continue;
         }
         try stdout_writer.printAscii(usage, .{});
@@ -134,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
         if (!glob.globMatch(pattern, entry.path)) continue;
 
         // Parse the file name and skip if it fails
-        run_table.addChannel(entry.path) catch |err| {
+        run_table.addChannel(entry.path, exclude.items) catch |err| {
             std.log.info("skipping {s}: {s}", .{ entry.path, @errorName(err) });
             continue;
         };

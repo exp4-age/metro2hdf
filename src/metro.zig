@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const glob = @import("glob.zig");
 const tsv = @import("tsv.zig");
 const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
@@ -9,8 +10,12 @@ pub const Options = struct {
     compress: usize = 4,
     hptdc_decode_words: bool = false,
     hptdc_sort_events: bool = false,
-    hptdc_other: []const u8 = "",
+    hptdc_other: std.ArrayList([]const u8) = .empty,
     hptdc_event_type: u8 = 'P',
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.hptdc_other.deinit(allocator);
+    }
 };
 
 pub const RunTable = struct {
@@ -25,7 +30,7 @@ pub const RunTable = struct {
         };
     }
 
-    pub fn addChannel(self: *@This(), path: []const u8) !void {
+    pub fn addChannel(self: *@This(), path: []const u8, exclude: [][]const u8) !void {
         const stem = std.fs.path.stem(path);
         const ext = std.fs.path.extension(path);
 
@@ -64,6 +69,11 @@ pub const RunTable = struct {
 
         // Last is the name of the data channel
         const channel = it.rest();
+
+        // Skip if the channel is in the exclude list
+        for (exclude) |glob_str| {
+            if (glob.globMatch(glob_str, channel)) return;
+        }
 
         // Parse the file extension
         const format = try FileFormat.parse(ext);
