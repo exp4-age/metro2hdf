@@ -78,7 +78,7 @@ pub fn parseChannel(
     }
 }
 
-pub fn parseRaw(
+fn parseRaw(
     ch: metro.Channel,
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
@@ -115,7 +115,7 @@ pub fn parseRaw(
     }
 }
 
-pub fn parseDecode(
+fn parseDecode(
     ch: metro.Channel,
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
@@ -152,7 +152,7 @@ pub fn parseDecode(
     }
 }
 
-pub fn sortEvents(
+fn sortEvents(
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
     scan_table: *ScanTable,
@@ -286,7 +286,7 @@ pub fn sortEvents(
     }
 }
 
-pub fn parseHits(
+fn parseHits(
     ch: metro.Channel,
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
