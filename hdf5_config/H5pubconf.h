@@ -247,9 +247,9 @@
 /* #undef H5_HAVE_C11_THREADS */
 
 /* No compression filters */
-/* #undef H5_HAVE_FILTER_DEFLATE */
+#define H5_HAVE_FILTER_DEFLATE 1
 /* #undef H5_HAVE_FILTER_SZIP */
-/* #undef H5_HAVE_ZLIB_H */
+#define H5_HAVE_ZLIB_H 1
 /* #undef H5_HAVE_SZLIB_H */
 /* #undef H5_HAVE_LIBZ */
 /* #undef H5_HAVE_LIBSZ */

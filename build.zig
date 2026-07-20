@@ -91,12 +91,47 @@ pub fn build(b: *std.Build) !void {
     }
 }
 
+fn buildZLib(
+    b: *std.Build,
+    zlib_dep: *std.Build.Dependency,
+    t: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    const zlib = b.addLibrary(.{
+        .name = "z",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = t,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+
+    zlib.root_module.addCSourceFiles(.{
+        .root = zlib_dep.path(""),
+        .files = &zlib_c_sources,
+        .flags = &.{
+            "-DHAVE_SYS_TYPES_H",
+            "-DHAVE_STDINT_H",
+            "-DHAVE_STDDEF_H",
+            "-DZ_HAVE_UNISTD_H",
+        },
+    });
+
+    zlib.root_module.addIncludePath(zlib_dep.path(""));
+
+    return zlib;
+}
+
 fn buildHdf5(
     b: *std.Build,
     hdf5_dep: *std.Build.Dependency,
     t: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
+    const zlib_dep = b.dependency("zlib", .{});
+    const zlib = buildZLib(b, zlib_dep, t, optimize);
+
     const hdf5_lib = b.addLibrary(.{
         .name = "hdf5",
         .linkage = .static,
@@ -125,8 +160,29 @@ fn buildHdf5(
     hdf5_lib.root_module.addIncludePath(hdf5_dep.path("src/H5FDsubfiling"));
     hdf5_lib.root_module.addIncludePath(b.path("hdf5_config"));
 
+    hdf5_lib.root_module.addIncludePath(zlib_dep.path(""));
+    hdf5_lib.root_module.linkLibrary(zlib);
+
     return hdf5_lib;
 }
+
+const zlib_c_sources = [_][]const u8{
+    "adler32.c",
+    "compress.c",
+    "crc32.c",
+    "deflate.c",
+    "gzclose.c",
+    "gzlib.c",
+    "gzread.c",
+    "gzwrite.c",
+    "inflate.c",
+    "infback.c",
+    "inftrees.c",
+    "inffast.c",
+    "trees.c",
+    "uncompr.c",
+    "zutil.c",
+};
 
 const hdf5_c_sources = [_][]const u8{
     // H5 core
