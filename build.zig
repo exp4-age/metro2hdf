@@ -1,11 +1,11 @@
 const std = @import("std");
 
 const targets: []const std.Target.Query = &.{
-    .{ .cpu_arch = .aarch64, .os_tag = .macos },
-    .{ .cpu_arch = .aarch64, .os_tag = .linux },
+    // .{ .cpu_arch = .aarch64, .os_tag = .macos },
+    // .{ .cpu_arch = .aarch64, .os_tag = .linux },
     .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
-    .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
-    .{ .cpu_arch = .x86_64, .os_tag = .windows },
+    // .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
+    // .{ .cpu_arch = .x86_64, .os_tag = .windows },
 };
 
 pub fn build(b: *std.Build) !void {
@@ -70,9 +70,6 @@ pub fn build(b: *std.Build) !void {
         // Link hdf5
         const hdf5 = buildHdf5(b, hdf5_dep, b.resolveTargetQuery(t), .ReleaseSafe);
         release.root_module.linkLibrary(hdf5);
-        release.root_module.addIncludePath(hdf5_dep.path("src"));
-        release.root_module.addIncludePath(hdf5_dep.path("src/H5FDsubfiling"));
-        release.root_module.addIncludePath(b.path("hdf5_config"));
         release.root_module.addIncludePath(b.path("src"));
         release.root_module.addCSourceFile(.{
             .file = b.path("src/hdf5lib.c"),
@@ -106,6 +103,12 @@ fn buildZLib(
             .link_libc = true,
         }),
     });
+
+    zlib.installHeadersDirectory(
+        zlib_dep.path(""),
+        "",
+        .{ .exclude_extensions = &.{ ".c", ".in", ".txt" } },
+    );
 
     zlib.root_module.addCSourceFiles(.{
         .root = zlib_dep.path(""),
@@ -159,6 +162,16 @@ fn buildHdf5(
     hdf5_lib.root_module.addIncludePath(hdf5_dep.path("src"));
     hdf5_lib.root_module.addIncludePath(hdf5_dep.path("src/H5FDsubfiling"));
     hdf5_lib.root_module.addIncludePath(b.path("hdf5_config"));
+
+    hdf5_lib.installHeadersDirectory(hdf5_dep.path("src"), "", .{
+        .include_extensions = &.{".h"},
+    });
+    hdf5_lib.installHeadersDirectory(hdf5_dep.path("src/H5FDsubfiling"), "", .{
+        .include_extensions = &.{".h"},
+    });
+    hdf5_lib.installHeadersDirectory(b.path("hdf5_config"), "", .{
+        .include_extensions = &.{".h"},
+    });
 
     hdf5_lib.root_module.addIncludePath(zlib_dep.path(""));
     hdf5_lib.root_module.linkLibrary(zlib);
