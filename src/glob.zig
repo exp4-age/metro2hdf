@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn globMatch(pat: []const u8, str: []const u8) bool {
+pub fn globMatch(pat: [:0]const u8, str: [:0]const u8) bool {
     var back_pat: ?[*]const u8 = null;
     var back_str: ?[*]const u8 = null;
 

@@ -33,8 +33,10 @@ Usage: metro2hdf [OPTIONS]...
                                   directory (default: ".")
       --glob=GLOB                 glob string for selecting metro run
                                   files (default: "*")
-  -e, --exclude=CHANNEL           exclude channel from processing
-                                  (can be a glob string)
+  -e, --exclude=CHANNEL           exclude matching channels from
+                                  processing (can be a glob string)
+  -i, --include=CHANNEL           include only matching channels in
+                                  the processing
       --replace                   overwrite existing files
       --help                      show this help and exit
 
@@ -69,3 +71,38 @@ are currently not supported.
 
 > ⚠️ This version of `metro2hdf` uses the naming convention `{m}E{n}P`!
 > If `m` or `n` is `0`, the corresponding particle is omitted, e.g. `3E`.
+
+### HDF5 data structure
+
+The data in the hdf5 file is organized by scan index and step value.
+In case of a single measurement without steps this will look like this:
+
+```console
+/
+├─ 0                        <- scan index
+|  ├─ 0.0                   <- step value
+|  |  ├─ 1E                 <- coincidence events
+|  |  ├─ 2E
+|  |  ├─ 2E1P
+|  |  ├─ ...
+|  |  ├─ flowmeter#a1       <- continuous metro data channel
+|  |  ├─ photodiode#value
+|  |  ├─ ...
+|  ├─ by_idx                <- access data by step index instead of step value
+|  |  ├─ 0                  <- step index
+|  |  |  ├─ 1E              <- points to the same dataset as "0/0.0/1E"
+|  |  |  ├─ ...
+```
+
+### Exclude channels
+
+Channels may be excluded by either listing the unwanted channels
+`--exclude="channel"` or including only the desired channels with
+`--include="channel"`. Multiple channels may be excluded / included:
+`-i="channel1" -i="channel2"`. The given strings are `glob` matched
+with the detected channels, e.g. `-e="coinc2_rd!*"` skips most
+coincidence data channels, which are useful during data acquisition
+but usually not used in data evaluation.
+
+The include list (if not empty) is matched first, any 'surviving'
+channels are then tested for matches in the exclude list.

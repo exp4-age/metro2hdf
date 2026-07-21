@@ -12,8 +12,10 @@ const usage =
     \\                                  directory (default: ".")
     \\      --glob=GLOB                 glob string for selecting metro run
     \\                                  files (default: "*")
-    \\  -e, --exclude=CHANNEL           exclude channel from processing
-    \\                                  (can be a glob string)
+    \\  -e, --exclude=CHANNEL           exclude matching channels from
+    \\                                  processing (can be a glob string)
+    \\  -i, --include=CHANNEL           include only matching channels in
+    \\                                  the processing
     \\      --replace                   overwrite existing files
     \\      --help                      show this help and exit
     \\
@@ -45,11 +47,13 @@ pub fn main(init: std.process.Init) !void {
     const stdout_writer = &stdout_file_writer.interface;
 
     // Default options for metro2hdf:
-    var pattern: []const u8 = "*";
+    var pattern: [:0]const u8 = "*";
     var output_dir: []const u8 = ".";
     var replace = false;
-    var exclude: std.ArrayList([]const u8) = .empty;
+    var exclude: std.ArrayList([:0]const u8) = .empty;
     defer exclude.deinit(allocator);
+    var include: std.ArrayList([:0]const u8) = .empty;
+    defer include.deinit(allocator);
     var options = metro.Options{};
 
     // Parse command line arguments
@@ -74,6 +78,12 @@ pub fn main(init: std.process.Init) !void {
             continue;
         } else if (std.mem.startsWith(u8, arg, "-e=")) {
             try exclude.append(allocator, arg[3..]);
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "--include=")) {
+            try include.append(allocator, arg[10..]);
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "-i=")) {
+            try include.append(allocator, arg[3..]);
             continue;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
@@ -136,7 +146,7 @@ pub fn main(init: std.process.Init) !void {
         if (!glob.globMatch(pattern, entry.path)) continue;
 
         // Parse the file name and skip if it fails
-        run_table.addChannel(entry.path, exclude.items) catch |err| {
+        run_table.addChannel(entry.path, exclude.items, include.items) catch |err| {
             std.log.info("skipping {s}: {s}", .{ entry.path, @errorName(err) });
             continue;
         };

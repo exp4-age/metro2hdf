@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const version: std.SemanticVersion = .{ .major = 0, .minor = 1, .patch = 0 };
+const version: std.SemanticVersion = .{ .major = 0, .minor = 2, .patch = 0 };
 
 const targets: []const std.Target.Query = &.{
     .{ .cpu_arch = .aarch64, .os_tag = .macos },

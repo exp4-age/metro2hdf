@@ -25,7 +25,12 @@ pub const RunTable = struct {
         };
     }
 
-    pub fn addChannel(self: *@This(), path: []const u8, exclude: [][]const u8) !void {
+    pub fn addChannel(
+        self: *@This(),
+        path: []const u8,
+        exclude: [][:0]const u8,
+        include: [][:0]const u8,
+    ) !void {
         const stem = std.fs.path.stem(path);
         const ext = std.fs.path.extension(path);
 
@@ -65,9 +70,22 @@ pub const RunTable = struct {
         // Last is the name of the data channel
         const channel = it.rest();
 
+        // Get null terminated string for glob matching
+        const channel0 = try self.map.allocator.dupeSentinel(u8, channel, 0);
+        defer self.map.allocator.free(channel0);
+
+        // Skip if the channel is not in the include list (if not empty)
+        if (include.len > 0) {
+            var match = false;
+            for (include) |glob_str| {
+                if (glob.globMatch(glob_str, channel0)) match = true;
+            }
+            if (!match) return;
+        }
+
         // Skip if the channel is in the exclude list
         for (exclude) |glob_str| {
-            if (glob.globMatch(glob_str, channel)) return;
+            if (glob.globMatch(glob_str, channel0)) return;
         }
 
         // Parse the file extension
