@@ -10,11 +10,14 @@ const targets: []const std.Target.Query = &.{
 };
 
 pub fn build(b: *std.Build) !void {
+    const zlib_dep = b.dependency("zlib", .{});
+    const hdf5_dep = b.dependency("hdf5", .{});
+
+    // Convenience step for building and running metro2hdf
+    const run_step = b.step("run", "Run metro2hdf");
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-
-    const hdf5_dep = b.dependency("hdf5", .{});
-    const hdf5_native = buildHdf5(b, hdf5_dep, target, optimize);
 
     const exe = b.addExecutable(.{
         .name = "metro2hdf",
@@ -26,17 +29,17 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
-    // Link hdf5
-    exe.root_module.addIncludePath(b.path("src"));
+    // Build and link hdf5
+    const hdf5_native = buildHdf5(b, hdf5_dep, zlib_dep, target, optimize);
+    exe.root_module.linkLibrary(hdf5_native);
     exe.root_module.addCSourceFile(.{
         .file = b.path("src/hdf5lib.c"),
         .flags = &.{"-std=c11"},
     });
-    exe.root_module.linkLibrary(hdf5_native);
+    exe.root_module.addIncludePath(b.path("src"));
 
     b.installArtifact(exe);
 
-    const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -44,20 +47,13 @@ pub fn build(b: *std.Build) !void {
         run_cmd.addArgs(args);
     }
 
-    // Run tests
-    const test_step = b.step("test", "Run tests");
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    test_step.dependOn(&run_exe_tests.step);
-
     // Build binary releases
     const release_step = b.step("release", "Build binary release");
 
     for (targets) |t| {
+        // Define the output directory for each target
+        const dest_subdir = try t.zigTriple(b.allocator);
+
         const release = b.addExecutable(.{
             .name = "metro2hdf",
             .root_module = b.createModule(.{
@@ -68,24 +64,43 @@ pub fn build(b: *std.Build) !void {
             }),
         });
 
-        // Link hdf5
-        const hdf5 = buildHdf5(b, hdf5_dep, b.resolveTargetQuery(t), .ReleaseFast);
+        // Build and link hdf5 for the target
+        const hdf5 = buildHdf5(b, hdf5_dep, zlib_dep, b.resolveTargetQuery(t), .ReleaseFast);
         release.root_module.linkLibrary(hdf5);
-        release.root_module.addIncludePath(b.path("src"));
         release.root_module.addCSourceFile(.{
             .file = b.path("src/hdf5lib.c"),
             .flags = &.{"-std=c11"},
         });
+        release.root_module.addIncludePath(b.path("src"));
 
         const target_output = b.addInstallArtifact(release, .{
             .dest_dir = .{
                 .override = .{
-                    .custom = try t.zigTriple(b.allocator),
+                    .custom = dest_subdir,
                 },
             },
         });
-
         release_step.dependOn(&target_output.step);
+
+        // Add the metro2hdf README
+        const readme_path = try std.fmt.allocPrint(b.allocator, "{s}/README.md", .{dest_subdir});
+        const readme = b.addInstallFile(b.path("README.md"), readme_path);
+        release_step.dependOn(&readme.step);
+
+        // Add the metro2hdf license
+        const license_path = try std.fmt.allocPrint(b.allocator, "{s}/LICENSE", .{dest_subdir});
+        const license = b.addInstallFile(b.path("LICENSE"), license_path);
+        release_step.dependOn(&license.step);
+
+        // Add the hdf5 license
+        const hdf5_license_path = try std.fmt.allocPrint(b.allocator, "{s}/vendor/hdf5/LICENSE", .{dest_subdir});
+        const hdf5_license = b.addInstallFile(hdf5_dep.path("LICENSE"), hdf5_license_path);
+        release_step.dependOn(&hdf5_license.step);
+
+        // Add the zlib license
+        const zlib_license_path = try std.fmt.allocPrint(b.allocator, "{s}/vendor/zlib/LICENSE", .{dest_subdir});
+        const zlib_license = b.addInstallFile(zlib_dep.path("LICENSE"), zlib_license_path);
+        release_step.dependOn(&zlib_license.step);
     }
 }
 
@@ -109,14 +124,11 @@ fn buildZLib(
     zlib.root_module.addCSourceFiles(.{
         .root = zlib_dep.path(""),
         .files = &zlib_c_sources,
-        .flags = &.{
-            "-std=c99",
-            "-DHAVE_SYS_TYPES_H",
-            "-DHAVE_STDINT_H",
-            "-DHAVE_STDDEF_H",
-            // "-DZ_HAVE_UNISTD_H",
-        },
+        .flags = &.{ "-std=c99" },
     });
+    zlib.root_module.addCMacro("HAVE_SYS_TYPES_H", "1");
+    zlib.root_module.addCMacro("HAVE_STDINT_H", "1");
+    zlib.root_module.addCMacro("HAVE_STDDEF_H", "1");
     zlib.root_module.addCMacro("HAVE_UNISTD_H", "1");
     zlib.root_module.addIncludePath(zlib_dep.path(""));
     zlib.installHeadersDirectory(zlib_dep.path(""), "", .{});
@@ -127,14 +139,11 @@ fn buildZLib(
 fn buildHdf5(
     b: *std.Build,
     hdf5_dep: *std.Build.Dependency,
+    zlib_dep: *std.Build.Dependency,
     t: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
-    const zlib_dep = b.dependency("zlib", .{});
     const zlib = buildZLib(b, zlib_dep, t, optimize);
-
-    // const raw_src = b.addWriteFiles();
-    // _ = raw_src.addCopyDirectory(hdf5_dep.path("."), "", .{});
 
     const hdf5_lib = b.addLibrary(.{
         .name = "hdf5",
@@ -147,7 +156,6 @@ fn buildHdf5(
         }),
     });
 
-    // const hdf5_local = b.addNamedWriteFiles("local");
     const hdf5_configh = configureHdf5(b, hdf5_dep, hdf5_lib.version.?, t);
     hdf5_lib.root_module.addConfigHeader(hdf5_configh);
 
