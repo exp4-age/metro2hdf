@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const version: std.SemanticVersion = .{ .major = 0, .minor = 1, .patch = 0 };
+
 const targets: []const std.Target.Query = &.{
     .{ .cpu_arch = .aarch64, .os_tag = .macos },
     .{ .cpu_arch = .x86_64, .os_tag = .macos },
@@ -52,7 +54,13 @@ pub fn build(b: *std.Build) !void {
 
     for (targets) |t| {
         // Define the output directory for each target
-        const dest_subdir = try t.zigTriple(b.allocator);
+        const triple = try t.zigTriple(b.allocator);
+        const dest_subdir = b.fmt("metro2hdf-{d}.{d}.{d}-{s}", .{
+            version.major,
+            version.minor,
+            version.patch,
+            triple,
+        });
 
         const release = b.addExecutable(.{
             .name = "metro2hdf",
@@ -83,24 +91,35 @@ pub fn build(b: *std.Build) !void {
         release_step.dependOn(&target_output.step);
 
         // Add the metro2hdf README
-        const readme_path = try std.fmt.allocPrint(b.allocator, "{s}/README.md", .{dest_subdir});
+        const readme_path = b.fmt("{s}/README.md", .{dest_subdir});
         const readme = b.addInstallFile(b.path("README.md"), readme_path);
         release_step.dependOn(&readme.step);
 
         // Add the metro2hdf license
-        const license_path = try std.fmt.allocPrint(b.allocator, "{s}/LICENSE", .{dest_subdir});
+        const license_path = b.fmt("{s}/LICENSE", .{dest_subdir});
         const license = b.addInstallFile(b.path("LICENSE"), license_path);
         release_step.dependOn(&license.step);
 
         // Add the hdf5 license
-        const hdf5_license_path = try std.fmt.allocPrint(b.allocator, "{s}/vendor/hdf5/LICENSE", .{dest_subdir});
+        const hdf5_license_path = b.fmt("{s}/vendor/hdf5/LICENSE", .{dest_subdir});
         const hdf5_license = b.addInstallFile(hdf5_dep.path("LICENSE"), hdf5_license_path);
         release_step.dependOn(&hdf5_license.step);
 
         // Add the zlib license
-        const zlib_license_path = try std.fmt.allocPrint(b.allocator, "{s}/vendor/zlib/LICENSE", .{dest_subdir});
+        const zlib_license_path = b.fmt("{s}/vendor/zlib/LICENSE", .{dest_subdir});
         const zlib_license = b.addInstallFile(zlib_dep.path("LICENSE"), zlib_license_path);
         release_step.dependOn(&zlib_license.step);
+
+        // Compress output into an archive for release
+        const archive_cmd = if (b.resolveTargetQuery(t).result.os.tag == .windows)
+            b.addSystemCommand(&.{ "zip", "-qr", b.fmt("{s}.zip", .{dest_subdir}), dest_subdir })
+        else
+            b.addSystemCommand(&.{ "tar", "czf", b.fmt("{s}.tar.gz", .{dest_subdir}), dest_subdir });
+
+        archive_cmd.setCwd(.{ .cwd_relative = b.install_path });
+        archive_cmd.step.dependOn(&target_output.step);
+
+        release_step.dependOn(&archive_cmd.step);
     }
 }
 
@@ -191,7 +210,7 @@ fn buildHdf5(
 fn configureHdf5(
     b: *std.Build,
     hdf5_dep: *std.Build.Dependency,
-    version: std.SemanticVersion,
+    v: std.SemanticVersion,
     t: std.Build.ResolvedTarget,
 ) *std.Build.Step.ConfigHeader {
     var header = b.addConfigHeader(
@@ -326,10 +345,10 @@ fn configureHdf5(
             .HDF5_PACKAGE = "hdf5",
             .HDF5_PACKAGE_BUGREPORT = "help@hdfgroup.org",
             .HDF5_PACKAGE_NAME = "HDF5",
-            .HDF5_PACKAGE_STRING = b.fmt("HDF5 v{d}.{d}.{d}", .{ version.major, version.minor, version.patch }),
+            .HDF5_PACKAGE_STRING = b.fmt("HDF5 v{d}.{d}.{d}", .{ v.major, v.minor, v.patch }),
             .HDF5_PACKAGE_TARNAME = "hdf5",
             .HDF5_PACKAGE_URL = "https://www.hdf5group.org",
-            .HDF5_PACKAGE_VERSION_STRING = b.fmt("{d}.{d}.{d}", .{ version.major, version.minor, version.patch }),
+            .HDF5_PACKAGE_VERSION_STRING = b.fmt("{d}.{d}.{d}", .{ v.major, v.minor, v.patch }),
             // platform specific sizeof
             .H5_PAC_C_MAX_REAL_PRECISION = null,
             .H5_PAC_FC_MAX_REAL_PRECISION = null,
@@ -379,7 +398,7 @@ fn configureHdf5(
             .H5_USE_200_API_DEFAULT = true,
             .H5_USE_FILE_LOCKING = true,
             .H5_USING_MEMCHECKER = null,
-            .H5_VERSION = b.fmt("{d}.{d}.{d}", .{ version.major, version.minor, version.patch }),
+            .H5_VERSION = b.fmt("{d}.{d}.{d}", .{ v.major, v.minor, v.patch }),
             .H5_WANT_DATA_ACCURACY = true,
             .H5_WANT_DCONV_EXCEPTION = true,
             .H5_SHOW_ALL_WARNINGS = null,
