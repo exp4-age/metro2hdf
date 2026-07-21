@@ -1,11 +1,12 @@
 const std = @import("std");
 
 const targets: []const std.Target.Query = &.{
-    // .{ .cpu_arch = .aarch64, .os_tag = .macos },
-    // .{ .cpu_arch = .aarch64, .os_tag = .linux },
+    .{ .cpu_arch = .aarch64, .os_tag = .macos },
+    .{ .cpu_arch = .x86_64, .os_tag = .macos },
+    .{ .cpu_arch = .aarch64, .os_tag = .linux },
     .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
-    // .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
-    // .{ .cpu_arch = .x86_64, .os_tag = .windows },
+    .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
+    .{ .cpu_arch = .x86_64, .os_tag = .windows },
 };
 
 pub fn build(b: *std.Build) !void {
@@ -63,12 +64,12 @@ pub fn build(b: *std.Build) !void {
                 .root_source_file = b.path("src/main.zig"),
                 .link_libc = true,
                 .target = b.resolveTargetQuery(t),
-                .optimize = .ReleaseSafe,
+                .optimize = .ReleaseFast,
             }),
         });
 
         // Link hdf5
-        const hdf5 = buildHdf5(b, hdf5_dep, b.resolveTargetQuery(t), .ReleaseSafe);
+        const hdf5 = buildHdf5(b, hdf5_dep, b.resolveTargetQuery(t), .ReleaseFast);
         release.root_module.linkLibrary(hdf5);
         release.root_module.addIncludePath(b.path("src"));
         release.root_module.addCSourceFile(.{
@@ -96,6 +97,7 @@ fn buildZLib(
 ) *std.Build.Step.Compile {
     const zlib = b.addLibrary(.{
         .name = "z",
+        .version = .{.major = 1, .minor = 3, .patch = 2},
         .linkage = .static,
         .root_module = b.createModule(.{
             .target = t,
@@ -104,24 +106,20 @@ fn buildZLib(
         }),
     });
 
-    zlib.installHeadersDirectory(
-        zlib_dep.path(""),
-        "",
-        .{ .exclude_extensions = &.{ ".c", ".in", ".txt" } },
-    );
-
     zlib.root_module.addCSourceFiles(.{
         .root = zlib_dep.path(""),
         .files = &zlib_c_sources,
         .flags = &.{
+            "-std=c99",
             "-DHAVE_SYS_TYPES_H",
             "-DHAVE_STDINT_H",
             "-DHAVE_STDDEF_H",
-            "-DZ_HAVE_UNISTD_H",
+            // "-DZ_HAVE_UNISTD_H",
         },
     });
-
+    zlib.root_module.addCMacro("HAVE_UNISTD_H", "1");
     zlib.root_module.addIncludePath(zlib_dep.path(""));
+    zlib.installHeadersDirectory(zlib_dep.path(""), "", .{});
 
     return zlib;
 }
@@ -135,8 +133,12 @@ fn buildHdf5(
     const zlib_dep = b.dependency("zlib", .{});
     const zlib = buildZLib(b, zlib_dep, t, optimize);
 
+    // const raw_src = b.addWriteFiles();
+    // _ = raw_src.addCopyDirectory(hdf5_dep.path("."), "", .{});
+
     const hdf5_lib = b.addLibrary(.{
         .name = "hdf5",
+        .version = .{ .major = 2, .minor = 1, .patch = 1 },
         .linkage = .static,
         .root_module = b.createModule(.{
             .target = t,
@@ -145,39 +147,300 @@ fn buildHdf5(
         }),
     });
 
-    // All C source files from HDF5 src/ (from CMakeLists.txt common_SRCS)
+    // const hdf5_local = b.addNamedWriteFiles("local");
+    const hdf5_configh = configureHdf5(b, hdf5_dep, hdf5_lib.version.?, t);
+    hdf5_lib.root_module.addConfigHeader(hdf5_configh);
+
     hdf5_lib.root_module.addCSourceFiles(.{
         .root = hdf5_dep.path("src"),
         .files = &hdf5_c_sources,
-        .flags = &.{ "-std=c11", "-w", "-D_GNU_SOURCE" },
+        .flags = &c_flags,
     });
 
-    // Our generated build-settings stub
     hdf5_lib.root_module.addCSourceFile(.{
         .file = b.path("hdf5_config/H5build_settings.c"),
-        .flags = &.{ "-std=c11", "-w", "-D_GNU_SOURCE" },
+        .flags = &c_flags,
     });
+
+    if (t.result.os.tag == .linux) {
+        hdf5_lib.root_module.addCMacro("_POSIX_C_SOURCE", "200809L");
+        hdf5_lib.root_module.addCMacro("_GNU_SOURCE", "");
+    }
 
     // Include paths: HDF5 source headers + our config directory
     hdf5_lib.root_module.addIncludePath(hdf5_dep.path("src"));
     hdf5_lib.root_module.addIncludePath(hdf5_dep.path("src/H5FDsubfiling"));
-    hdf5_lib.root_module.addIncludePath(b.path("hdf5_config"));
+    hdf5_lib.installHeadersDirectory(hdf5_dep.path("src"), "", .{});
+    hdf5_lib.installHeadersDirectory(hdf5_dep.path("src/H5FDsubfiling"), "", .{});
+    hdf5_lib.installConfigHeader(hdf5_configh);
 
-    hdf5_lib.installHeadersDirectory(hdf5_dep.path("src"), "", .{
-        .include_extensions = &.{".h"},
-    });
-    hdf5_lib.installHeadersDirectory(hdf5_dep.path("src/H5FDsubfiling"), "", .{
-        .include_extensions = &.{".h"},
-    });
-    hdf5_lib.installHeadersDirectory(b.path("hdf5_config"), "", .{
-        .include_extensions = &.{".h"},
-    });
-
-    hdf5_lib.root_module.addIncludePath(zlib_dep.path(""));
+    // Link zlib
     hdf5_lib.root_module.linkLibrary(zlib);
 
     return hdf5_lib;
 }
+
+fn configureHdf5(
+    b: *std.Build,
+    hdf5_dep: *std.Build.Dependency,
+    version: std.SemanticVersion,
+    t: std.Build.ResolvedTarget,
+) *std.Build.Step.ConfigHeader {
+    var header = b.addConfigHeader(
+        .{ .style = .{ .cmake = hdf5_dep.path("src/H5pubconf.h.in") } },
+        .{
+            .H5_HAVE_WINDOWS = if (t.result.os.tag == .windows) true else null,
+            .H5_HAVE_MINGW = if (t.result.isMinGW()) true else null,
+            .H5_HAVE_WIN32_API = if (t.result.os.tag == .windows) true else null,
+            .H5_HAVE_VISUAL_STUDIO = null,
+            .H5_DEFAULT_PLUGINDIR = b.fmt("{s}/local/plugin", .{b.install_prefix}),
+            .H5_DISABLE_SOME_LDOUBLE_CONV = if (t.result.cpu.arch == .powerpc64le) true else null,
+            .H5_FC_DUMMY_MAIN = null,
+            .H5_FC_DUMMY_MAIN_EQ_F77 = null,
+            .H5_FC_FUNC = "H5_FC_FUNC(name,NAME) name ## _",
+            .H5_FC_FUNC_ = "H5_FC_FUNC_(name,NAME) name ## _",
+            .H5_FORTRAN_C_BOOL_IS_UNIQUE = null,
+            .H5_FORTRAN_HAVE_C_SIZEOF = null,
+            .H5_FORTRAN_HAVE_SIZEOF = null,
+            .H5_FORTRAN_HAVE_STORAGE_SIZE = null,
+            .H5_FORTRAN_HAVE_CHAR_ALLOC = null,
+            .H5_FORTRAN_SIZEOF_LONG_DOUBLE = null,
+            .CMAKE_Fortran_COMPILER_ID = null,
+            .H5_H5CONFIG_F_NUM_IKIND = null,
+            .H5_H5CONFIG_F_IKIND = null,
+            .H5_H5CONFIG_F_NUM_RKIND = null,
+            .H5_H5CONFIG_F_RKIND = null,
+            .H5_H5CONFIG_F_RKIND_SIZEOF = null,
+            .H5_HAVE_ALARM = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_ARPA_INET_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_ASPRINTF = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_ATTRIBUTE = true,
+            .H5_HAVE_C99_COMPLEX_NUMBERS = true,
+            .H5_HAVE_CLOCK_GETTIME = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_COMPLEX_NUMBERS = true,
+            .H5_HAVE_CURL_H = null,
+            .H5_HAVE_DARWIN = t.result.os.tag == .macos,
+            .H5_HAVE_DIRECT = null,
+            .H5_HAVE_DIRENT_H = true,
+            .H5_HAVE_DLFCN_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_EMBEDDED_LIBINFO = true,
+            .H5_HAVE_FABSF16 = null,
+            .H5_HAVE_FCNTL = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_FILTER_DEFLATE = true,
+            .H5_HAVE_FILTER_SZIP = null,
+            .H5_HAVE__FLOAT16 = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_FLOAT128 = null,
+            .H5_HAVE_FLOCK = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_FORK = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_FSEEKO = null,
+            .H5_HAVE_Fortran_INTEGER_SIZEOF_16 = null,
+            .H5_HAVE_GETCONSOLESCREENBUFFERINFO = null,
+            .H5_HAVE_GETHOSTNAME = true,
+            .H5_HAVE_GETRUSAGE = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_GETTEXTINFO = null,
+            .H5_HAVE_GETTIMEOFDAY = true,
+            .H5_HAVE_HDFS_H = null,
+            .H5_HAVE_INSTRUMENTED_LIBRARY = null,
+            .H5_HAVE_IOC_VFD = null,
+            .H5_HAVE_IOCTL = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_LIBCRYPTO = null,
+            .H5_HAVE_LIBCURL = null,
+            .H5_HAVE_LIBDL = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_LIBHDFS = null,
+            .H5_HAVE_LIBJVM = null,
+            .H5_HAVE_LIBM = true,
+            .H5_HAVE_LIBPTHREAD = null,
+            .H5_HAVE_LIBSZ = null,
+            .H5_HAVE_LIBWS2_32 = null,
+            .H5_HAVE_LIBZ = true,
+            .H5_HAVE_MAP_API = null,
+            .H5_HAVE_MIRROR_VFD = null,
+            .H5_HAVE_MPI_MULTI_LANG_Comm = null,
+            .H5_HAVE_MPI_MULTI_LANG_Info = null,
+            .H5_HAVE_NETDB_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_NETINET_IN_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_OPENSSL_EVP_H = null,
+            .H5_HAVE_OPENSSL_HMAC_H = null,
+            .H5_HAVE_OPENSSL_SHA_H = null,
+            .H5_HAVE_PARALLEL = null,
+            .H5_HAVE_MPI_F08 = null,
+            .H5_HAVE_PARALLEL_FILTERED_WRITES = null,
+            .H5_HAVE_PREADWRITE = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_PTHREAD_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_PTHREAD_BARRIER = null,
+            .H5_HAVE_PWD_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_QSORT_REENTRANT = true,
+            .H5_HAVE_ROS3_VFD = null,
+            .H5_HAVE_STAT_ST_BLOCKS = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_STRCASESTR = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_STRDUP = true,
+            .H5_HAVE_STRUCT_TEXT_INFO = null,
+            .H5_HAVE_STRUCT_VIDEOCONFIG = null,
+            .H5_HAVE_SUBFILING_VFD = null,
+            .H5_HAVE_STDATOMIC_H = true,
+            .H5_HAVE_SYMLINK = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_SYS_FILE_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_SYS_IOCTL_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_SYS_RESOURCE_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_SYS_SOCKET_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_SYS_STAT_H = true,
+            .H5_HAVE_SYS_TIME_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_SZLIB_H = null,
+            .H5_HAVE_THREADSAFE = null,
+            .H5_HAVE_CONCURRENCY = null,
+            .H5_HAVE_THREADS = true,
+            .H5_HAVE_TIMEZONE = true,
+            .H5_HAVE_TIOCGETD = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_TIOCGWINSZ = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_TMPFILE = true,
+            .H5_HAVE_TM_GMTOFF = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_UNISTD_H = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_VASPRINTF = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_WAITPID = if (t.result.os.tag == .windows) null else true,
+            .H5_HAVE_WIN_THREADS = if (t.result.os.tag == .windows) true else null,
+            .H5_HAVE_C11_THREADS = null,
+            .H5_HAVE_WINDOW_PATH = if (t.result.os.tag == .windows) true else null,
+            .H5_HAVE_ZLIB_H = true,
+            .H5_HAVE_ZLIBNG_H = null,
+            .H5_HAVE__GETVIDEOCONFIG = null,
+            .H5_HAVE__SCRSIZE = null,
+            .H5_IGNORE_DISABLED_FILE_LOCKS = true,
+            .H5_INCLUDE_HL = true,
+            .H5_DIMENSION_SCALES_WITH_NEW_REF = null,
+            .H5_LDOUBLE_TO_FLOAT16_CORRECT = if (t.result.os.tag == .windows) null else true,
+            .H5_LDOUBLE_TO_LLONG_ACCURATE = true,
+            .H5_LDOUBLE_TO_LONG_SPECIAL = null,
+            .H5_LLONG_TO_LDOUBLE_CORRECT = true,
+            .H5_LONG_TO_LDOUBLE_SPECIAL = null,
+            .H5_LT_OBJDIR = null,
+            .H5_NO_DEPRECATED_SYMBOLS = null,
+            // package information
+            .HDF5_PACKAGE = "hdf5",
+            .HDF5_PACKAGE_BUGREPORT = "help@hdfgroup.org",
+            .HDF5_PACKAGE_NAME = "HDF5",
+            .HDF5_PACKAGE_STRING = b.fmt("HDF5 v{d}.{d}.{d}", .{ version.major, version.minor, version.patch }),
+            .HDF5_PACKAGE_TARNAME = "hdf5",
+            .HDF5_PACKAGE_URL = "https://www.hdf5group.org",
+            .HDF5_PACKAGE_VERSION_STRING = b.fmt("{d}.{d}.{d}", .{ version.major, version.minor, version.patch }),
+            // platform specific sizeof
+            .H5_PAC_C_MAX_REAL_PRECISION = null,
+            .H5_PAC_FC_MAX_REAL_PRECISION = null,
+            .H5_SIZEOF_BOOL = t.result.cTypeByteSize(.char),
+            .H5_SIZEOF_CHAR = t.result.cTypeByteSize(.char),
+            .H5_SIZEOF_DOUBLE = t.result.cTypeByteSize(.double),
+            .H5_SIZEOF_DOUBLE_COMPLEX = 2 * t.result.cTypeByteSize(.double),
+            .H5_SIZEOF_FLOAT = t.result.cTypeByteSize(.float),
+            .H5_SIZEOF_FLOAT_COMPLEX = 2 * t.result.cTypeByteSize(.float),
+            .H5_SIZEOF_INT = t.result.cTypeByteSize(.int),
+            .H5_SIZEOF_INT16_T = 2,
+            .H5_SIZEOF_INT32_T = 4,
+            .H5_SIZEOF_INT64_T = 8,
+            .H5_SIZEOF_INT8_T = 1,
+            .H5_SIZEOF_INT_FAST64_T = 8,
+            .H5_SIZEOF_INT_FAST8_T = 1,
+            .H5_SIZEOF_INT_LEAST16_T = 2,
+            .H5_SIZEOF_INT_LEAST32_T = 4,
+            .H5_SIZEOF_INT_LEAST64_T = 8,
+            .H5_SIZEOF_INT_LEAST8_T = 1,
+            .H5_SIZEOF_SIZE_T = t.result.ptrBitWidth() / 8,
+            .H5_SIZEOF_LONG = t.result.cTypeByteSize(.long),
+            .H5_SIZEOF_LONG_LONG = t.result.cTypeByteSize(.longlong),
+            .H5_SIZEOF_LONG_DOUBLE = t.result.cTypeByteSize(.longdouble),
+            .H5_SIZEOF_LONG_DOUBLE_COMPLEX = 2 * t.result.cTypeByteSize(.longdouble),
+            .H5_SIZEOF_OFF_T = t.result.ptrBitWidth() / 8,
+            .H5_SIZEOF_PTRDIFF_T = t.result.ptrBitWidth() / 8,
+            .H5_SIZEOF_SHORT = t.result.cTypeByteSize(.short),
+            .H5_SIZEOF_UINT16_T = 2,
+            .H5_SIZEOF_UINT32_T = 4,
+            .H5_SIZEOF_UINT64_T = 8,
+            .H5_SIZEOF_UINT8_T = 1,
+            .H5_SIZEOF_UINT_FAST64_T = 8,
+            .H5_SIZEOF_UINT_FAST8_T = 1,
+            .H5_SIZEOF_UINT_LEAST16_T = 2,
+            .H5_SIZEOF_UINT_LEAST32_T = 4,
+            .H5_SIZEOF_UINT_LEAST64_T = 8,
+            .H5_SIZEOF_UINT_LEAST8_T = 1,
+            .H5_SIZEOF_UNSIGNED = t.result.cTypeByteSize(.uint),
+            // api version info
+            .H5_STRICT_FORMAT_CHECKS = null,
+            .H5_USE_16_API_DEFAULT = null,
+            .H5_USE_18_API_DEFAULT = null,
+            .H5_USE_110_API_DEFAULT = null,
+            .H5_USE_112_API_DEFAULT = null,
+            .H5_USE_114_API_DEFAULT = null,
+            .H5_USE_200_API_DEFAULT = true,
+            .H5_USE_FILE_LOCKING = true,
+            .H5_USING_MEMCHECKER = null,
+            .H5_VERSION = b.fmt("{d}.{d}.{d}", .{ version.major, version.minor, version.patch }),
+            .H5_WANT_DATA_ACCURACY = true,
+            .H5_WANT_DCONV_EXCEPTION = true,
+            .H5_SHOW_ALL_WARNINGS = null,
+            .H5_WORDS_BIGENDIANR = if (t.result.cpu.arch.endian() == .big) true else null,
+            .H5__FILE_OFFSET_BITS = null,
+            .H5__LARGE_FILES = null,
+            .H5_off_t = null,
+            .H5_ssize_t = null,
+        },
+    );
+
+    if (t.result.os.tag == .windows) {
+        header.addValues(.{
+            .H5_SIZEOF_INT_FAST16_T = 4,
+            .H5_SIZEOF_INT_FAST32_T = 4,
+            .H5_SIZEOF_SSIZE_T = null,
+            .H5_SIZEOF_TIME_T = 8,
+            .H5_SIZEOF_UINT_FAST16_T = 4,
+            .H5_SIZEOF_UINT_FAST32_T = 4,
+            .H5_SIZEOF__FLOAT16 = 0,
+        });
+    } else {
+        header.addValues(.{
+            .H5_SIZEOF_INT_FAST16_T = 8,
+            .H5_SIZEOF_INT_FAST32_T = 8,
+            .H5_SIZEOF_SSIZE_T = t.result.ptrBitWidth() / 8,
+            .H5_SIZEOF_TIME_T = t.result.cTypeByteSize(.long),
+            .H5_SIZEOF_UINT_FAST16_T = 8,
+            .H5_SIZEOF_UINT_FAST32_T = 8,
+            .H5_SIZEOF__FLOAT16 = 2,
+        });
+
+    }
+
+    return header;
+}
+
+const c_flags = [_][]const u8{
+    "-std=c11",
+    "-Wall",
+    "-Warray-bounds",
+    "-Wcast-qual",
+    "-Wconversion",
+    "-Wdouble-promotion",
+    "-Wextra",
+    "-Wformat=2",
+    "-Wframe-larger-than=16384",
+    "-Wimplicit-fallthrough",
+    "-Wnull-dereference",
+    "-Wunused-const-variable",
+    "-Wwrite-strings",
+    "-Wpedantic",
+    "-Wvolatile-register-var",
+    "-Wno-c++-compat",
+    "-Wbad-function-cast",
+    "-Wimplicit-function-declaration",
+    "-Wincompatible-pointer-types",
+    "-Wmissing-declarations",
+    "-Wpacked",
+    "-Wshadow",
+    "-Wswitch",
+    "-Wno-error=incompatible-pointer-types-discards-qualifiers",
+    "-Wunused-function",
+    "-Wunused-variable",
+    "-Wunused-parameter",
+    "-Wcast-align",
+    "-Wformat",
+    "-Wno-missing-noreturn",
+};
 
 const zlib_c_sources = [_][]const u8{
     "adler32.c",
