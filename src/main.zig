@@ -17,6 +17,8 @@ const usage =
     \\  -i, --include=CHANNEL           include only matching channels in
     \\                                  the processing
     \\      --replace                   overwrite existing files
+    \\      --verbose                   write processed runs and channels
+    \\                                  to stdout
     \\      --help                      show this help and exit
     \\
     \\HPTDC OPTIONS (GRPS mode)
@@ -43,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
     var pattern: [:0]const u8 = "*";
     var output_dir: []const u8 = ".";
     var replace = false;
+    var verbose = false;
     var exclude: std.ArrayList([:0]const u8) = .empty;
     defer exclude.deinit(allocator);
     var include: std.ArrayList([:0]const u8) = .empty;
@@ -77,6 +80,8 @@ pub fn main(init: std.process.Init) !void {
             try include.append(allocator, arg[3..]);
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
+        } else if (std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {
             options.hptdc_event_type = 'P';
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {
@@ -84,12 +89,16 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-filter=")) {
             if (std.fmt.parseInt(u8, arg[19..], 2)) |filter| {
                 options.hptdc_hit_filter = filter;
-            } else |err| { return err; }
+            } else |err| {
+                return err;
+            }
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-mcp=")) {
             if (std.fmt.parseInt(u64, arg[16..], 10)) |channel| {
                 if (channel > 7) return error.UnsupportedTdcChannel;
                 options.hptdc_hit_mcp = @intCast(channel);
-            } else |err| { return err; }
+            } else |err| {
+                return err;
+            }
         } else if (std.mem.eql(u8, arg, "--help")) {
             try stdout_writer.printAscii(usage, .{});
             try stdout_writer.flush();
@@ -105,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Try opening output directory
     const out_dir = dir.openDir(io, output_dir, .{}) catch |err| {
-        std.log.info("could not open output directory {s}", .{ output_dir });
+        std.log.info("could not open output directory {s}", .{output_dir});
         return err;
     };
     defer out_dir.close(io);
@@ -132,8 +141,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     while (run_table.next()) |run| {
-        try stdout_writer.print("run {s}:\n", .{run.num});
-        try stdout_writer.flush();
+        if (verbose) {
+            try stdout_writer.print("run {s}:\n", .{run.num});
+            try stdout_writer.flush();
+        }
 
         // Construct name and path for the hdf5 file
         const filename = try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
@@ -174,18 +185,24 @@ pub fn main(init: std.process.Init) !void {
         // Iterate over all channels
         for (run.channels.items) |ch| {
             // Update stdout to indicate the channel that is being processed
-            try stdout_writer.print("  {s} ... ", .{ch.name});
-            try stdout_writer.flush();
+            if (verbose) {
+                try stdout_writer.print("  {s} ... ", .{ch.name});
+                try stdout_writer.flush();
+            }
 
             // Parse data and write to the hdf5 file
             ch.parse(&h5f, io, allocator, options) catch |err| {
-                try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
-                try stdout_writer.flush();
+                if (verbose) {
+                    try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
+                    try stdout_writer.flush();
+                }
                 continue;
             };
 
-            try stdout_writer.printAscii("done\n", .{});
-            try stdout_writer.flush();
+            if (verbose) {
+                try stdout_writer.printAscii("done\n", .{});
+                try stdout_writer.flush();
+            }
         }
     }
 }
