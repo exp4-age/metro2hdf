@@ -49,8 +49,7 @@ HDF5 OPTIONS (only affects specific channels)
                                   (no compression to max compression)
 
 HPTDC OPTIONS (GRPS mode only)
-      --hptdc-decode-words        decode words generated in certain
-                                  operation modes (4 bytes per word)
+      --hptdc-decode-words        decode words (4 bytes per word)
                                   into its type and argument
                                   (8 bytes per word)
       --hptdc-sort-events         decode words and sort events
