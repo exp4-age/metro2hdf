@@ -66,50 +66,9 @@ pub fn parseChannel(
         try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
         try scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size);
-        if (options.hptdc_sort_events) {
-            try sortEvents(&file_reader, h5f, &scan_table, &param_table, allocator, options);
-        } else {
-            try parseRaw(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
-        }
+        try sortEvents(&file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else {
         return error.UnknownHptdcMode;
-    }
-}
-
-fn parseRaw(
-    ch: metro.Channel,
-    file_reader: *std.Io.File.Reader,
-    h5f: *hdf5.File,
-    scan_table: *ScanTable,
-    param_table: *ParamTable,
-    allocator: std.mem.Allocator,
-    options: metro.Options,
-) !void {
-    var reader = &file_reader.interface;
-
-    for (scan_table.scans.items, 0..) |step_table, scan_idx| {
-        for (step_table.steps.items, 0..) |step, step_idx| {
-            // Go to the step data
-            try file_reader.seekTo(@intCast(step.data_offset));
-
-            // Check if we are at a step marker
-            if (try reader.takeInt(u32, .little) != 0) return error.MissingMarker;
-            if (try reader.takeInt(u32, .little) != 176) return error.MissingMarker;
-
-            // Skip if there is no data
-            if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
-
-            const n: usize = @intCast(@divExact(step.data_size, 4));
-
-            var words = try allocator.alloc(u32, n);
-            defer allocator.free(words);
-
-            for (0..n) |i| {
-                words[i] = try reader.takeInt(u32, .little);
-            }
-
-            try h5f.writeSimpleDset(u32, words, 0, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
-        }
     }
 }
 
@@ -253,6 +212,19 @@ fn parseHits(
         .@"align" = 0,
     };
 
+    // Get the tdc channel number of the MCP signal
+    const mcp_channel: u8 = @intCast(options.hptdc_hit_mcp);
+
+    // Filter events based on which channels triggered using a bit mask
+    var mask: u8 = 0;
+    const filter = options.hptdc_hit_filter;
+
+    // Accumulate time signals of a single event in an array
+    var times: [8]i64 = @splat(0);
+
+    var data: std.ArrayList(i64) = .empty;
+    defer data.deinit(allocator);
+
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
             // Go to the step data
@@ -266,14 +238,42 @@ fn parseHits(
 
             const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
 
-            var hits = try allocator.alloc(Hit, n);
-            defer allocator.free(hits);
+            for (0..n) |_| {
+                const hit = try reader.takeStruct(Hit, .little);
 
-            for (0..n) |i| {
-                hits[i] = try reader.takeStruct(Hit, .little);
+                if (hit.channel == mcp_channel) {
+                    // New MCP signal: process last event
+                    if (mask == filter) {
+                        try data.appendSlice(allocator, &times);
+                    }
+
+                    // Reset times and mask
+                    times = @splat(0);
+                    mask = 0;
+                } else if (hit.channel > 7) {
+                    // More than 8 tdc channels are currently not supported
+                    continue;
+                }
+
+                // Bit mask corresponding to the channel
+                const shift: u3 = @intCast(hit.channel);
+                const bit: u8 = @as(u8, 1) << shift;
+
+                // Check if this is the first occurence of this channel for this event,
+                // if a channel triggered multiple times only the first time is used
+                if (~mask & bit != 0) {
+                    // Store the time and update the mask
+                    times[hit.channel] = hit.time;
+                    mask |= bit;
+                }
+
             }
 
-            try h5f.writeCompoundDset(Hit, hits, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
+            // Write the dataset to the hdf5 file
+            try h5f.writeSimpleDset(i64, data.items, 8, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
+
+            // Clear the data of this step but keep capacity for the next step
+            data.clearRetainingCapacity();
         }
     }
 

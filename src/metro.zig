@@ -6,10 +6,9 @@ const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
 
 pub const Options = struct {
-    chunk_size: usize = 1e5,
-    compress: usize = 4,
-    hptdc_sort_events: bool = false,
     hptdc_event_type: u8 = 'P',
+    hptdc_hit_filter: u8 = (@as(u8, 1) << 7) - 1,
+    hptdc_hit_mcp: u3 = 6,
 };
 
 pub const RunTable = struct {

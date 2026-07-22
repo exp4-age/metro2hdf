@@ -97,64 +97,6 @@ pub const File = struct {
         _ = &options;
     }
 
-    pub fn writeCompoundDset(
-        self: *@This(),
-        comptime T: type,
-        data: []const T,
-        scan_idx: usize,
-        step_idx: usize,
-        step_val: ?[]const u8,
-        channel: []const u8,
-        attrs: []StrAttr,
-        options: metro.Options,
-    ) !void {
-        if (self.id < 0) return error.FileNotOpen;
-
-        // Compile error if T has no fields
-        if (@sizeOf(T) == 0) @compileError("Zero-sized structs are not supported");
-
-        // Create a 1d dataspace
-        const dims = [1]hdf5.hsize_t{@intCast(data.len)};
-        const fspace = hdf5.H5Screate_simple(1, &dims, null);
-        if (fspace < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Sclose(fspace);
-
-        const dcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_DATASET_CREATE());
-        if (dcpl < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Pclose(dcpl);
-
-        const chunk_size: hdf5.hsize_t = @intCast(@divFloor(options.chunk_size, @sizeOf(T)));
-        if (data.len > chunk_size) {
-            const chunk = [1]hdf5.hsize_t{chunk_size};
-            if (hdf5.H5Pset_chunk(dcpl, 1, &chunk) < 0) return error.H5I_INVALID_HID;
-            if (hdf5.H5Pset_deflate(dcpl, @intCast(options.compress)) < 0) return error.H5I_INVALID_HID;
-        }
-
-        // Create the compound datatype for T
-        const type_id = try createCompoundType(T);
-        if (type_id < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Tclose(type_id);
-
-        // Format path to dataset
-        var buf: [1024]u8 = undefined;
-        const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, channel }, 0);
-
-        // Create the dataset
-        const dset = try self.createDset(name, type_id, fspace, self.lcpl, dcpl);
-        defer _ = hdf5.H5Dclose(dset);
-
-        // Write attributes
-        for (attrs) |*attr| {
-            try attr.write(dset);
-        }
-
-        // Write the dataset
-        try File.writeDset(T, data, dset, type_id);
-
-        // Create a link for accessing the dataset using the step value
-        if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
-    }
-
     fn createDset(
         self: *@This(),
         name: [:0]const u8,
@@ -306,32 +248,4 @@ fn getH5T(comptime T: type) hdf5.hid_t {
         },
         else => @compileError("No known H5T for: " ++ @typeName(T)),
     };
-}
-
-fn createCompoundType(comptime T: type) !hdf5.hid_t {
-    const ti = @typeInfo(T);
-    if (ti != .@"struct") {
-        @compileError("T must be a struct");
-    }
-
-    // Create the H5T compound type
-    const type_id = hdf5.H5Tcreate(hdf5.H5T_COMPOUND, @sizeOf(T));
-    if (type_id < 0) return error.H5I_INVALID_HID;
-    errdefer _ = hdf5.H5Tclose(type_id);
-
-    // Insert corresponding type for each field of T
-    inline for (ti.@"struct".fields) |f| {
-        // Look up H5T type corresponding to the zig type
-        const f_type = getH5T(f.type);
-
-        // Add null termination
-        const cname = f.name ++ "\x00";
-
-        // Try to insert the type
-        if (hdf5.H5Tinsert(type_id, cname.ptr, @offsetOf(T, f.name), f_type) < 0) {
-            return error.H5I_INVALID_HID;
-        }
-    }
-
-    return type_id;
 }

@@ -19,18 +19,15 @@ const usage =
     \\      --replace                   overwrite existing files
     \\      --help                      show this help and exit
     \\
-    \\HDF5 OPTIONS (only affects specific channels)
-    \\      --chunk-size=SIZE           chunk size (bytes) used when
-    \\                                  writing compressed datasets
-    \\                                  (default: 1e5)
-    \\      --compress=LEVEL            use gzip compression with specified
-    \\                                  level (default: 4) from 0 to 9
-    \\                                  (no compression to max compression)
-    \\
-    \\HPTDC OPTIONS (GRPS mode only)
-    \\      --hptdc-sort-events         decode words and sort events
+    \\HPTDC OPTIONS (GRPS mode)
     \\      --hptdc-event-type={EP,EI}  type of recorded particles
     \\                                  (default: "EP")
+    \\
+    \\HPTDC OPTIONS (HITS mode)
+    \\      --hptdc-hit-filter=FILTER   specify a filter for the tdc
+    \\                                  channels (default: "01111111")
+    \\      --hptdc-hit-mcp=NUM         tdc channel number of the MCP
+    \\                                  (default: 6) from 0 to 7
     \\
 ;
 
@@ -60,55 +57,46 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
 
     while (args.next()) |arg| {
+        // Show usage if argument parsing fails
+        errdefer std.log.info("Could not parse argument: {s}", .{arg});
+        errdefer std.log.info("{s}", .{usage});
+
         if (std.mem.startsWith(u8, arg, "--glob=")) {
             pattern = arg[7..];
-            continue;
         } else if (std.mem.startsWith(u8, arg, "--output-dir=")) {
             output_dir = arg[13..];
-            continue;
         } else if (std.mem.startsWith(u8, arg, "-o=")) {
             output_dir = arg[3..];
-            continue;
         } else if (std.mem.startsWith(u8, arg, "--exclude=")) {
             try exclude.append(allocator, arg[10..]);
-            continue;
         } else if (std.mem.startsWith(u8, arg, "-e=")) {
             try exclude.append(allocator, arg[3..]);
-            continue;
         } else if (std.mem.startsWith(u8, arg, "--include=")) {
             try include.append(allocator, arg[10..]);
-            continue;
         } else if (std.mem.startsWith(u8, arg, "-i=")) {
             try include.append(allocator, arg[3..]);
-            continue;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
-            continue;
-        } else if (std.mem.startsWith(u8, arg, "--chunk-size=")) {
-            if (std.fmt.parseInt(usize, arg[13..], 10)) |chunk_size| {
-                options.chunk_size = chunk_size;
-                continue;
-            } else |_| {}
-        } else if (std.mem.startsWith(u8, arg, "--compress=")) {
-            if (std.fmt.parseInt(usize, arg[11..], 10)) |compress| {
-                if (compress >= 0 and compress < 10) {
-                    options.compress = compress;
-                    continue;
-                }
-            } else |_| {}
-        } else if (std.mem.eql(u8, arg, "--hptdc-sort-events")) {
-            options.hptdc_sort_events = true;
-            continue;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {
             options.hptdc_event_type = 'P';
-            continue;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {
             options.hptdc_event_type = 'I';
-            continue;
+        } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-filter=")) {
+            if (std.fmt.parseInt(u8, arg[19..], 2)) |filter| {
+                options.hptdc_hit_filter = filter;
+            } else |err| { return err; }
+        } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-mcp=")) {
+            if (std.fmt.parseInt(u64, arg[16..], 10)) |channel| {
+                if (channel > 7) return error.UnsupportedTdcChannel;
+                options.hptdc_hit_mcp = @intCast(channel);
+            } else |err| { return err; }
+        } else if (std.mem.eql(u8, arg, "--help")) {
+            try stdout_writer.printAscii(usage, .{});
+            try stdout_writer.flush();
+            return;
+        } else {
+            return error.UnknownArgument;
         }
-        try stdout_writer.printAscii(usage, .{});
-        try stdout_writer.flush();
-        return;
     }
 
     // Get current working directory for glob'ing
@@ -117,10 +105,8 @@ pub fn main(init: std.process.Init) !void {
 
     // Try opening output directory
     const out_dir = dir.openDir(io, output_dir, .{}) catch |err| {
-        std.log.err("could not open output directory {s}: {s}", .{ output_dir, @errorName(err) });
-        try stdout_writer.printAscii(usage, .{});
-        try stdout_writer.flush();
-        return;
+        std.log.info("could not open output directory {s}", .{ output_dir });
+        return err;
     };
     defer out_dir.close(io);
 
