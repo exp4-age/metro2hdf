@@ -40,36 +40,38 @@ Usage: metro2hdf [OPTIONS]...
       --replace                   overwrite existing files
       --help                      show this help and exit
 
-HDF5 OPTIONS (only affects specific channels)
-      --chunk-size=SIZE           chunk size (bytes) used when
-                                  writing compressed datasets
-                                  (default: 1e5)
-      --compress=LEVEL            use gzip compression with specified
-                                  level (default: 4) from 0 to 9
-                                  (no compression to max compression)
-
-HPTDC OPTIONS (GRPS mode only)
-      --hptdc-decode-words        decode words (4 bytes per word)
-                                  into its type and argument
-                                  (8 bytes per word)
+HPTDC OPTIONS (GRPS mode)
       --hptdc-sort-events         decode words and sort events
       --hptdc-event-type={EP,EI}  type of recorded particles
                                   (default: "EP")
+
+HPTDC OPTIONS (HITS mode)
+      --hptdc-hit-filter=FILTER   specify a filter for the tdc
+                                  channels (default: "01111111")
+      --hptdc-hit-mcp=NUM         tdc channel number of the MCP
+                                  (default: 6) from 0 to 7
 ```
 
 ### Processing HPTDC data
 
-HPTDC data (`.tdc` files) is written to the hdf5 file without
-processing by default.
-Coincidence data (HPTDC `GRPS` mode) may be either decoded by
-adding the argument `--hptdc-decode-words` or sorted into
-coincidence events by adding `--hptdc-sort-events`.
+HPTDC data (`.tdc` files) are processed based on the HPTDC mode:
+
+Coincidence data (HPTDC `GRPS` mode) is sorted into events by
+accumulating all particles detected in between two bunch markers.
 This replaces the previously used separate `sort_events` program.
 All coincidences up to `9E9P` are processed. Higher coincidences
 are currently not supported.
 
 > ⚠️ This version of `metro2hdf` uses the naming convention `{m}E{n}P`!
 > If `m` or `n` is `0`, the corresponding particle is omitted, e.g. `3E`.
+
+Non-coincidence data (HPTDC `HITS` mode) is also sorted into events, but
+instead using the MCP channel as the start of an event. If a channel
+triggered multiple times before the next MCP signal the additional
+signals are discarded and the first time is used.
+
+> ⚠️ For the metro `dld_rd` device the data in `dld_rd#raw` may not
+> match the processed `HITS` data because of a bug in metro!
 
 ### HDF5 data structure
 
