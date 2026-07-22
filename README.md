@@ -102,7 +102,8 @@ Channels may be excluded by either listing the unwanted channels
 `-i="channel1" -i="channel2"`. The given strings are `glob` matched
 with the detected channels, e.g. `-e="coinc2_rd!*"` skips most
 coincidence data channels, which are useful during data acquisition
-but usually not used in data evaluation.
+but usually not used in data evaluation. In order to only get the
+sorted events `-i="coinc2_rd#groups"` can be used.
 
 The include list (if not empty) is matched first, any 'surviving'
 channels are then tested for matches in the exclude list.
