@@ -21,6 +21,10 @@ const usage =
     \\                                  to stdout
     \\      --help                      show this help and exit
     \\
+    \\HPTDC OPTIONS
+    \\      --hptdc-rebuild-tables      force rebuild of step tables by
+    \\                                  searching for scan and step markers
+    \\
     \\HPTDC OPTIONS (GRPS mode)
     \\      --hptdc-event-type={EP,EI}  type of recorded particles
     \\                                  (default: "EP")
@@ -82,6 +86,8 @@ pub fn main(init: std.process.Init) !void {
             replace = true;
         } else if (std.mem.eql(u8, arg, "--verbose")) {
             verbose = true;
+        } else if (std.mem.eql(u8, arg, "--hptdc-rebuild-tables")) {
+            options.hptdc_rebuild_tables = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {
             options.hptdc_event_type = 'P';
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {

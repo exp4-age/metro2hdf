@@ -42,6 +42,10 @@ Usage: metro2hdf [OPTIONS]...
                                   to stdout
       --help                      show this help and exit
 
+HPTDC OPTIONS
+      --hptdc-rebuild-tables      force rebuild of step tables by
+                                  searching for scan and step markers
+
 HPTDC OPTIONS (GRPS mode)
       --hptdc-event-type={EP,EI}  type of recorded particles
                                   (default: "EP")

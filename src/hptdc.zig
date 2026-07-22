@@ -16,6 +16,8 @@ pub fn parseChannel(
     var file_reader = file.reader(io, &read_buffer);
     var reader = &file_reader.interface;
 
+    var rebuild_tables = options.hptdc_rebuild_tables;
+
     // Check for HPTDC marker
     if (!std.mem.eql(u8, try reader.take(5), "HPTDC")) return error.CorruptedHeader;
 
@@ -36,7 +38,7 @@ pub fn parseChannel(
     // Where and how big is the scan table?
     const scan_table_offset = try reader.takeInt(i64, .little);
     const scan_table_size = try reader.takeInt(i32, .little);
-    if (scan_table_offset < header_size + 4) return error.CorruptedHeader;
+    if (scan_table_offset < header_size + 4) rebuild_tables = true;
 
     // Where and how big is the parameter table?
     const param_table_offset = try reader.takeInt(i64, .little);
@@ -62,10 +64,26 @@ pub fn parseChannel(
     defer scan_table.deinit();
 
     if (std.mem.eql(u8, mode, "HITS")) {
-        try scan_table.parse(Hit, &file_reader, scan_table_offset, scan_table_size);
+        // Parse the scan table for step marker positions and data sizes
+        scan_table.parse(Hit, &file_reader, scan_table_offset, scan_table_size) catch {
+            rebuild_tables = true;
+        };
+
+        // Rebuild the step tables if parse failed or specifically requested
+        if (rebuild_tables) try scan_table.rebuild(Hit, Hit, &file_reader);
+
+        // Parse the hits and group them into events
         try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
-        try scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size);
+        // Parse the scan table for step marker positions and data sizes
+        scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size) catch {
+            rebuild_tables = true;
+        };
+
+        // Rebuild the step tables if parse failed or specifically requested
+        if (rebuild_tables) try scan_table.rebuild(Word, u32, &file_reader);
+
+        // Parse and decode the words and sort them into events
         try sortEvents(&file_reader, h5f, &scan_table, &param_table, allocator, options);
     } else {
         return error.UnknownHptdcMode;
@@ -90,8 +108,12 @@ fn sortEvents(
     const max_count: usize = 9;
 
     var events: [max_count + 1][max_count + 1]std.ArrayList(i32) = undefined;
-    for (&events) |*row| { for (row) |*ev| ev.* = .empty; }
-    defer for (&events) |*row| { for (row) |*ev| ev.deinit(allocator); };
+    for (&events) |*row| {
+        for (row) |*ev| ev.* = .empty;
+    }
+    defer for (&events) |*row| {
+        for (row) |*ev| ev.deinit(allocator);
+    };
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
@@ -99,8 +121,8 @@ fn sortEvents(
             try file_reader.seekTo(@intCast(step.data_offset));
 
             // Check if we are at a step marker
-            if (try reader.takeInt(u32, .little) != 0) return error.MissingMarker;
-            if (try reader.takeInt(u32, .little) != 176) return error.MissingMarker;
+            if (try reader.takeInt(u32, .little) != 0) return error.MissingMarkerStep;
+            if (try reader.takeInt(u32, .little) != 176) return error.MissingMarkerStep;
 
             // Skip if there is no data
             if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
@@ -165,11 +187,11 @@ fn sortEvents(
 
                     // Create name for the dataset
                     var name_buf: [8]u8 = undefined;
-                    var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{i, j, p2});
+                    var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{ i, j, p2 });
                     if (j == 0) {
                         name = try std.fmt.bufPrint(&name_buf, "{d}E", .{i});
                     } else if (i == 0) {
-                        name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{j, p2});
+                        name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{ j, p2 });
                     }
 
                     // Set shape to 0 for a single particle
@@ -197,21 +219,6 @@ fn parseHits(
 ) !void {
     var reader = &file_reader.interface;
 
-    const scan_marker = Hit{
-        .time = -1,
-        .channel = 0xff,
-        .type = 0xa0,
-        .bin = 0x0000,
-        .@"align" = 0,
-    };
-    const step_marker = Hit{
-        .time = -1,
-        .channel = 0xff,
-        .type = 0xb0,
-        .bin = 0x0000,
-        .@"align" = 0,
-    };
-
     // Get the tdc channel number of the MCP signal
     const mcp_channel: u8 = @intCast(options.hptdc_hit_mcp);
 
@@ -231,7 +238,7 @@ fn parseHits(
             try file_reader.seekTo(@intCast(step.data_offset));
 
             // Check if we are at a step marker
-            if (try reader.takeStruct(Hit, .little) != step_marker) return error.MissingMarker;
+            if (try reader.takeStruct(Hit, .little) != Hit.step_marker) return error.MissingMarker;
 
             // Skip if there is no data
             if (step.data_size < @sizeOf(Hit) or @mod(step.data_size, @sizeOf(Hit)) != 0) continue;
@@ -266,7 +273,6 @@ fn parseHits(
                     times[hit.channel] = hit.time;
                     mask |= bit;
                 }
-
             }
 
             // Write the dataset to the hdf5 file
@@ -276,8 +282,6 @@ fn parseHits(
             data.clearRetainingCapacity();
         }
     }
-
-    _ = &scan_marker;
 }
 
 const ScanTable = struct {
@@ -327,6 +331,91 @@ const ScanTable = struct {
         }
     }
 
+    pub fn rebuild(
+        self: *@This(),
+        comptime MarkerT: type,
+        comptime DataT: type,
+        file_reader: *std.Io.File.Reader,
+    ) !void {
+        comptime {
+            if (@hasField(MarkerT, "scan_marker")) {
+                @compileError("Field scan_marker required");
+            }
+            if (@hasField(MarkerT, "step_marker")) {
+                @compileError("Field step_marker required");
+            }
+        }
+        // Clear any step tables added during parsing
+        for (self.scans.items) |*step_table| {
+            step_table.deinit();
+        }
+        self.scans.clearRetainingCapacity();
+
+        // Go to the beginning of the file
+        try file_reader.seekTo(5);
+
+        var reader = &file_reader.interface;
+
+        // Find the first scan marker
+        while (reader.peekStruct(MarkerT, .little)) |marker| {
+            // Stop when the first scan marker is found
+            if (marker == MarkerT.scan_marker) break;
+            // Advance by one byte and try again
+            reader.toss(1);
+        } else |_| {
+            return error.MissingMarkerFirst;
+        }
+
+        // Current seek position is at the first scan marker
+
+        while (reader.peekStruct(MarkerT, .little)) |marker| {
+            // End of data
+            if (marker != MarkerT.scan_marker) break;
+
+            // Advance to the step marker
+            reader.toss(@sizeOf(MarkerT));
+
+            // Get the current seek position
+            var data_offset: usize = file_reader.logicalPos();
+
+            // Check if next is actually a step marker
+            if (try reader.takeStruct(MarkerT, .little) != MarkerT.step_marker) break;
+
+            // Create a new step table and deinit on error
+            var step_table = StepTable{ .allocator = self.allocator };
+            errdefer step_table.deinit();
+
+            // Keep track of data size
+            var data_size: usize = 0;
+
+            while (reader.peekStruct(MarkerT, .little)) |data_or_marker| {
+                if (data_or_marker == MarkerT.step_marker) {
+                    // Found next step marker: append last step to the table
+                    try step_table.append(null, @intCast(data_offset), @intCast(data_size));
+                    // Remember position before tossing the marker
+                    data_offset = file_reader.logicalPos();
+                    data_size = 0;
+                    // Advance by size of the marker
+                    reader.toss(@sizeOf(MarkerT));
+                } else if (data_or_marker == MarkerT.scan_marker) {
+                    // Found next scan marker: append last step to the table and break
+                    try step_table.append(null, @intCast(data_offset), @intCast(data_size));
+                    break;
+                } else {
+                    // Advance by size of data
+                    reader.toss(@sizeOf(DataT));
+                    // Increment the data size
+                    data_size += @sizeOf(DataT);
+                }
+            } else |_| {
+                // EndOfStream or ReadFailed
+                try step_table.append(null, @intCast(data_offset), @intCast(data_size));
+            }
+            // Append the step table
+            try self.append(step_table);
+        } else |_| {}
+    }
+
     pub fn deinit(self: *@This()) void {
         for (self.scans.items) |*step_table| {
             step_table.deinit();
@@ -341,33 +430,44 @@ const StepTable = struct {
 
     pub fn append(
         self: *@This(),
-        step_val: []const u8,
+        step_val: ?[]const u8,
         data_offset: i64,
         data_size: i64,
     ) !void {
-        const len = std.mem.findScalar(u8, step_val, 0) orelse step_val.len;
-        const value = try self.allocator.dupeSentinel(u8, step_val[0..len], 0);
-        errdefer self.allocator.free(value);
-        try self.steps.append(
-            self.allocator,
-            .{
-                .value = value,
-                .data_offset = data_offset,
-                .data_size = data_size,
-            },
-        );
+        if (step_val) |val| {
+            const len = std.mem.findScalar(u8, val, 0) orelse val.len;
+            const value = try self.allocator.dupeSentinel(u8, val[0..len], 0);
+            errdefer self.allocator.free(value);
+            try self.steps.append(
+                self.allocator,
+                .{
+                    .value = value,
+                    .data_offset = data_offset,
+                    .data_size = data_size,
+                },
+            );
+        } else {
+            try self.steps.append(
+                self.allocator,
+                .{
+                    .value = null,
+                    .data_offset = data_offset,
+                    .data_size = data_size,
+                },
+            );
+        }
     }
 
     pub fn deinit(self: *@This()) void {
         for (self.steps.items) |*step| {
-            self.allocator.free(step.value);
+            if (step.value != null) self.allocator.free(step.value.?);
         }
         self.steps.deinit(self.allocator);
     }
 };
 
 const StepEntry = struct {
-    value: [:0]const u8,
+    value: ?[:0]const u8,
     data_offset: i64,
     data_size: i64,
 };
@@ -420,6 +520,37 @@ const Hit = packed struct {
     type: u8,
     bin: u16,
     @"align": i32,
+
+    const scan_marker = Hit{
+        .time = -1,
+        .channel = 0xff,
+        .type = 0xa0,
+        .bin = 0x0000,
+        .@"align" = 0,
+    };
+
+    const step_marker = Hit{
+        .time = -1,
+        .channel = 0xff,
+        .type = 0xb0,
+        .bin = 0x0000,
+        .@"align" = 0,
+    };
+};
+
+const Word = packed struct {
+    word1: u32,
+    word2: u32,
+
+    const scan_marker = Word{
+        .word1 = 0,
+        .word2 = 160,
+    };
+
+    const step_marker = Word{
+        .word1 = 0,
+        .word2 = 176,
+    };
 };
 
 const DecodedWord = struct {
