@@ -28,9 +28,6 @@ const usage =
     \\                                  (no compression to max compression)
     \\
     \\HPTDC OPTIONS (GRPS mode only)
-    \\      --hptdc-decode-words        decode words (4 bytes per word)
-    \\                                  into its type and argument
-    \\                                  (8 bytes per word)
     \\      --hptdc-sort-events         decode words and sort events
     \\      --hptdc-event-type={EP,EI}  type of recorded particles
     \\                                  (default: "EP")
@@ -99,9 +96,6 @@ pub fn main(init: std.process.Init) !void {
                     continue;
                 }
             } else |_| {}
-        } else if (std.mem.eql(u8, arg, "--hptdc-decode-words")) {
-            options.hptdc_decode_words = true;
-            continue;
         } else if (std.mem.eql(u8, arg, "--hptdc-sort-events")) {
             options.hptdc_sort_events = true;
             continue;
