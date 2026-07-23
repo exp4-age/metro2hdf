@@ -38,12 +38,18 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = std.heap.c_allocator;
+    // Get the io instance and initialize stdout
     const io = init.io;
-
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
     const stdout_writer = &stdout_file_writer.interface;
+
+    // Track the time
+    const clock: std.Io.Clock = .real;
+    const timer_start = clock.now(io);
+
+    // Get the c allocator because we interface with hdf5
+    const allocator = std.heap.c_allocator;
 
     // Default options for metro2hdf:
     var pattern: [:0]const u8 = "*";
@@ -129,6 +135,10 @@ pub fn main(init: std.process.Init) !void {
     var run_table = try metro.RunTable.init(allocator);
     defer run_table.deinit();
 
+    // Keep track of some statistics for the print summary
+    var matching_run_files: usize = 0;
+    var skipped_run_files: usize = 0;
+
     var walker = try Io.Dir.walk(dir, allocator);
     defer walker.deinit();
 
@@ -139,12 +149,24 @@ pub fn main(init: std.process.Init) !void {
         // Skip if the path does not match the glob pattern
         if (!glob.globMatch(pattern, entry.path)) continue;
 
+        matching_run_files += 1;
+
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path, exclude.items, include.items) catch |err| {
-            std.log.info("skipping {s}: {s}", .{ entry.path, @errorName(err) });
+            if (err != error.ExcludedChannel) {
+                std.log.info("skipping {s}: {s}", .{ entry.path, @errorName(err) });
+            }
+            skipped_run_files += 1;
             continue;
         };
     }
+
+    // Keep track of some statistics for the print summary
+    var processed_channels: usize = 0;
+    var skipped_channels: usize = 0;
+    var new_files: usize = 0;
+    var replaced_files: usize = 0;
+    var skipped_files: usize = 0;
 
     while (run_table.next()) |run| {
         if (verbose) {
@@ -162,17 +184,23 @@ pub fn main(init: std.process.Init) !void {
         if (out_dir.access(io, filename, .{ .read = true, .write = true })) {
             if (!replace) {
                 std.log.info("skipping {s}: file already exists", .{filepath});
+                skipped_files += 1;
                 continue;
             } else {
                 out_dir.deleteFile(io, filename) catch |err| {
                     std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
+                    skipped_files += 1;
                     continue;
                 };
+                replaced_files += 1;
             }
         } else |err| switch (err) {
-            error.FileNotFound => {},
+            error.FileNotFound => {
+                new_files += 1;
+            },
             else => {
                 std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
+                skipped_files += 1;
             },
         }
 
@@ -198,17 +226,48 @@ pub fn main(init: std.process.Init) !void {
 
             // Parse data and write to the hdf5 file
             ch.parse(&h5f, io, allocator, options) catch |err| {
+                skipped_channels += 1;
                 if (verbose) {
                     try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
                     try stdout_writer.flush();
                 }
                 continue;
             };
+            processed_channels += 1;
 
             if (verbose) {
                 try stdout_writer.printAscii("done\n", .{});
                 try stdout_writer.flush();
             }
         }
+
+        if (verbose) {
+            try stdout_writer.printAsciiChar('\n', .{});
+            try stdout_writer.flush();
+        }
     }
+
+    // Print summary
+    try stdout_writer.printAscii("μετρο2hdf summary\n", .{});
+    try stdout_writer.printAscii("Processed files : ", .{});
+    try stdout_writer.print("{d} matching ({d} skipped)\n", .{
+        matching_run_files,
+        skipped_run_files,
+    });
+    try stdout_writer.printAscii("HDF5 output     : ", .{});
+    try stdout_writer.print("{d} written ({d} new, {d} replaced, {d} skipped)\n", .{
+        new_files + replaced_files,
+        new_files,
+        replaced_files,
+        skipped_files,
+    });
+    try stdout_writer.printAscii("Channels        : ", .{});
+    try stdout_writer.print("{d} total ({d} skipped)\n", .{
+        processed_channels,
+        skipped_channels,
+    });
+    try stdout_writer.printAscii("Elapsed time    : ", .{});
+    try timer_start.untilNow(io, clock).format(stdout_writer);
+    try stdout_writer.printAsciiChar('\n', .{});
+    try stdout_writer.flush();
 }

@@ -79,19 +79,19 @@ pub const RunTable = struct {
             for (include) |glob_str| {
                 if (glob.globMatch(glob_str, channel0)) match = true;
             }
-            if (!match) return;
+            if (!match) return error.ExcludedChannel;
         }
 
         // Skip if the channel is in the exclude list
         for (exclude) |glob_str| {
-            if (glob.globMatch(glob_str, channel0)) return;
+            if (glob.globMatch(glob_str, channel0)) return error.ExcludedChannel;
         }
 
         // Parse the file extension
         const format = try FileFormat.parse(ext);
 
-        // Found metro screenshot: skip without error
-        if (format == .jpg) return;
+        // Found metro screenshot
+        if (format == .jpg) return error.ExcludedChannel;
 
         // Combination of num, name, date and time should uniquely identify a run
         const run_hash = hash.final();
