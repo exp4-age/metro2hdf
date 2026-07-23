@@ -186,7 +186,7 @@ pub fn main(init: std.process.Init) !void {
         defer h5f.close();
 
         // Write run attributes
-        h5f.writeRootAttrs(run) catch {};
+        h5f.writeRootAttrs(run, allocator) catch {};
 
         // Iterate over all channels
         for (run.channels.items) |ch| {

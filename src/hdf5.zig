@@ -45,8 +45,7 @@ pub const File = struct {
         step_idx: usize,
         step_val: ?[]const u8,
         channel: []const u8,
-        attrs: []StrAttr,
-        options: metro.Options,
+        attrs: *AttrList,
     ) !void {
         // Fail if the file is not open
         if (self.id < 0) return error.FileNotOpen;
@@ -83,18 +82,14 @@ pub const File = struct {
         const dset = try self.createDset(name, type_id, fspace, self.lcpl, dcpl);
         defer _ = hdf5.H5Dclose(dset);
 
-        // Write attributes
-        for (attrs) |*attr| {
-            try attr.write(dset);
-        }
+        // Write attributes but don't error if it fails
+        attrs.write(dset) catch {};
 
         // Write the dataset
         try File.writeDset(T, data, dset, type_id);
 
         // Create a link for accessing the dataset using the step value
         if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
-
-        _ = &options;
     }
 
     fn createDset(
@@ -142,92 +137,114 @@ pub const File = struct {
         if (hdf5.H5Lcreate_hard(self.id, target.ptr, self.id, link.ptr, self.lcpl, hdf5.H5P_DEFAULT) < 0) return error.H5LcreateFailed;
     }
 
-    pub fn writeRootAttrs(self: *@This(), run: metro.Run) !void {
+    pub fn writeRootAttrs(self: *@This(), run: metro.Run, allocator: std.mem.Allocator) !void {
         // Open the root group
         const root = hdf5.H5Gopen2(self.id, "/", hdf5.H5P_DEFAULT);
         if (root < 0) return error.H5I_INVALID_HID;
         defer _ = hdf5.H5Gclose(root);
 
-        var buf: [1024]u8 = undefined;
+        var attrs = try AttrList.init(allocator);
+        defer attrs.deinit();
 
-        // Write measurement number
-        const num = try std.fmt.bufPrintSentinel(&buf, "{s}", .{run.num}, 0);
-        var num_attr = try StrAttr.init("number", num);
-        defer num_attr.deinit();
-        try num_attr.write(root);
+        // Measurement run number
+        try attrs.append("number", run.num);
 
-        // Write name
-        const name = try std.fmt.bufPrintSentinel(&buf, "{s}", .{run.name}, 0);
-        var name_attr = try StrAttr.init("name", name);
-        defer name_attr.deinit();
-        try name_attr.write(root);
+        // Measurement name
+        try attrs.append("name", run.name);
 
-        // Write date
-        const date = try std.fmt.bufPrintSentinel(&buf, "{s}-{s}-{s}", .{ run.date[0..2], run.date[2..4], run.date[4..8] }, 0);
-        var date_attr = try StrAttr.init("date", date);
-        defer date_attr.deinit();
-        try date_attr.write(root);
+        var buf: [8]u8 = undefined;
 
-        // Write time
-        const time = try std.fmt.bufPrintSentinel(&buf, "{s}:{s}:{s}", .{ run.time[0..2], run.time[2..4], run.time[4..6] }, 0);
-        var time_attr = try StrAttr.init("time", time);
-        defer time_attr.deinit();
-        try time_attr.write(root);
+        // Format and append the date
+        const date = try std.fmt.bufPrint(&buf, "{s}-{s}-{s}", .{ run.date[0..2], run.date[2..4], run.date[4..8] });
+        try attrs.append("date", date);
+
+        // Format and append the time
+        const time = try std.fmt.bufPrint(&buf, "{s}:{s}:{s}", .{ run.time[0..2], run.time[2..4], run.time[4..6] });
+        try attrs.append("time", time);
+
+        // Write the attributes to the root group
+        try attrs.write(root);
     }
 };
 
-pub const StrAttr = struct {
-    name: [:0]const u8,
-    value: [:0]const u8,
+pub const AttrList = struct {
+    attrs: std.ArrayList(Attr),
+    allocator: std.mem.Allocator,
     type_id: hdf5.hid_t,
     fspace: hdf5.hid_t,
 
-    pub fn init(name: [:0]const u8, value: [:0]const u8) !StrAttr {
+    const Attr = struct {
+        name: [:0]const u8,
+        value: [:0]const u8,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) !AttrList {
         // Create the hdf5 type
         const type_id = hdf5.H5Tcopy(hdf5.ZIG_H5T_C_S1());
         if (type_id < 0) return error.H5I_INVALID_HID;
-        if (hdf5.H5Tset_size(type_id, hdf5.H5T_VARIABLE) < 0) return error.H5Error;
-        if (hdf5.H5Tset_cset(type_id, hdf5.H5T_CSET_UTF8) < 0) return error.H5Error;
-        if (hdf5.H5Tset_strpad(type_id, hdf5.H5T_STR_NULLTERM) < 0) return error.H5Error;
+        errdefer _ = hdf5.H5Tclose(type_id);
+
+        if (hdf5.H5Tset_size(type_id, hdf5.H5T_VARIABLE) < 0) return error.H5I_INVALID_HID;
+        if (hdf5.H5Tset_cset(type_id, hdf5.H5T_CSET_UTF8) < 0) return error.H5I_INVALID_HID;
+        if (hdf5.H5Tset_strpad(type_id, hdf5.H5T_STR_NULLTERM) < 0) return error.H5I_INVALID_HID;
 
         // Create dataspace for the attribute
         const fspace = hdf5.H5Screate(hdf5.H5S_SCALAR);
         if (fspace < 0) return error.H5I_INVALID_HID;
 
-        return .{ .name = name, .value = value, .type_id = type_id, .fspace = fspace };
+        return .{ .attrs = .empty, .allocator = allocator, .type_id = type_id, .fspace = fspace };
+    }
+
+    pub fn append(self: *@This(), name: []const u8, value: []const u8) !void {
+        // Copy the strings and terminate them because this gets passed to hdf5
+        const cname = try self.allocator.dupeSentinel(u8, name, 0);
+        errdefer self.allocator.free(cname);
+
+        const cvalue = try self.allocator.dupeSentinel(u8, value, 0);
+        errdefer self.allocator.free(cvalue);
+
+        try self.attrs.append(self.allocator, .{ .name = cname, .value = cvalue });
     }
 
     pub fn write(self: *@This(), obj: hdf5.hid_t) !void {
         if (obj < 0) return error.H5I_INVALID_HID;
 
-        const cptr: [*c]const u8 = self.value.ptr;
-        const buf: ?*const anyopaque = @ptrCast(&cptr);
+        for (self.attrs.items) |*attr| {
+            const cptr: [*c]const u8 = attr.value.ptr;
+            const buf: ?*const anyopaque = @ptrCast(&cptr);
 
-        // Overwrite if attribute already exists
-        if (hdf5.H5Aexists(obj, self.name.ptr) > 0) {
-            const attr = hdf5.H5Aopen(obj, self.name.ptr, hdf5.H5P_DEFAULT);
-            if (attr < 0) return error.H5I_INVALID_HID;
-            defer _ = hdf5.H5Aclose(attr);
+            // Overwrite if attribute already exists
+            if (hdf5.H5Aexists(obj, attr.name.ptr) > 0) {
+                const attr_id = hdf5.H5Aopen(obj, attr.name.ptr, hdf5.H5P_DEFAULT);
+                if (attr_id < 0) return error.H5I_INVALID_HID;
+                defer _ = hdf5.H5Aclose(attr_id);
+
+                // Write attribute
+                if (hdf5.H5Awrite(attr_id, self.type_id, buf) < 0) return error.H5AwriteError;
+                return;
+            }
+
+            // Create attribute
+            const attr_id = hdf5.H5Acreate2(obj, attr.name.ptr, self.type_id, self.fspace, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+            if (attr_id < 0) return error.H5I_INVALID_HID;
+            defer _ = hdf5.H5Aclose(attr_id);
 
             // Write attribute
-            if (hdf5.H5Awrite(attr, self.type_id, buf) < 0) return error.H5Error;
-            return;
+            if (hdf5.H5Awrite(attr_id, self.type_id, buf) < 0) return error.H5AwriteError;
         }
-
-        // Create attribute
-        const attr = hdf5.H5Acreate2(obj, self.name.ptr, self.type_id, self.fspace, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
-        if (attr < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Aclose(attr);
-
-        // Write attribute
-        if (hdf5.H5Awrite(attr, self.type_id, buf) < 0) return error.H5Error;
     }
 
     pub fn deinit(self: *@This()) void {
+        // Close HDF5 objects
         if (self.type_id >= 0) _ = hdf5.H5Tclose(self.type_id);
-        self.type_id = -1;
         if (self.fspace >= 0) _ = hdf5.H5Sclose(self.fspace);
-        self.fspace = -1;
+
+        // Free name and value strings
+        for (self.attrs.items) |*attr| {
+            self.allocator.free(attr.name);
+            self.allocator.free(attr.value);
+        }
+        self.attrs.deinit(self.allocator);
     }
 };
 

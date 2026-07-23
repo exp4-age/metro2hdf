@@ -10,6 +10,9 @@ pub fn parseChannel(
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
+    // Currently no options supported
+    _ = &options;
+
     // Initialize the reader
     const buf_size = 4096;
     var read_buffer: [buf_size]u8 = undefined;
@@ -23,27 +26,28 @@ pub fn parseChannel(
         return error.UnsupportedChannel;
     }
 
-    // Create parameter table to store the attributes
-    var param_table = ParamTable{ .allocator = allocator };
-    defer param_table.deinit();
+    // Create an attribute list
+    var attrs = try hdf5.AttrList.init(allocator);
+    defer attrs.deinit();
 
     // Get the channel name
     const name_marker = try reader.takeDelimiter('\n');
     if (name_marker == null) return error.MissingAttribute;
     if (!std.mem.startsWith(u8, name_marker.?, "# Name: ")) return error.MissingAttribute;
     if (!std.mem.eql(u8, name_marker.?[8..], ch.name)) return error.ChannelMismatch;
-    try param_table.addAttr("name", name_marker.?[8..]);
+    try attrs.append("name", name_marker.?[8..]);
 
     // Get the hint
     const hint_marker = try reader.takeDelimiter('\n');
     if (hint_marker == null) return error.MissingAttribute;
     if (!std.mem.startsWith(u8, hint_marker.?, "# Hint: ")) return error.MissingAttribute;
-    try param_table.addAttr("hint", hint_marker.?[8..]);
+    try attrs.append("hint", hint_marker.?[8..]);
 
     // Get the frequency
     const freq_marker = try reader.takeDelimiter('\n');
     if (!std.mem.startsWith(u8, freq_marker.?, "# Frequency: ")) return error.MissingAttribute;
-    try param_table.addAttr("freq", freq_marker.?[13..]);
+    try attrs.append("freq", freq_marker.?[13..]);
+    const freq = Frequency.fromString(freq_marker.?[13..]);
 
     // Get the shape
     const shape_str = try reader.takeDelimiter('\n');
@@ -53,21 +57,23 @@ pub fn parseChannel(
     // Parse additional attributes if present
     while (reader.peekDelimiterExclusive('\n')) |line| {
         if (std.mem.find(u8, line, ":")) |idx| {
-            try param_table.addAttr(line[2..idx], line[idx + 2 ..]);
+            try attrs.append(line[2..idx], line[idx + 2 ..]);
             reader.toss(line.len + 1);
         } else break;
     } else |err| {
         return err;
     }
 
-    const freq = param_table.attrs.items[2].value;
-
-    if (std.mem.eql(u8, freq, "continuous")) {
-        try parseContinuous(reader, h5f, ch, shape, param_table.attrs.items, allocator, options);
-    } else if (std.mem.eql(u8, freq, "step")) {
-        try parseStep(reader, h5f, ch, shape, param_table.attrs.items, allocator, options);
-    } else {
-        return error.UnsupportedChannel;
+    switch (freq) {
+        .continuous => {
+            try parseContinuous(reader, h5f, ch, shape, &attrs, allocator);
+        },
+        .step => {
+            try parseStep(reader, h5f, ch, shape, &attrs, allocator);
+        },
+        .unknown => {
+            return error.UnsupportedChannel;
+        },
     }
 }
 
@@ -76,9 +82,8 @@ fn parseStep(
     h5f: *hdf5.File,
     ch: metro.Channel,
     shape: usize,
-    attrs: []hdf5.StrAttr,
+    attrs: *hdf5.AttrList,
     allocator: std.mem.Allocator,
-    options: metro.Options,
 ) !void {
     const ncols: usize = if (shape == 0) 1 else shape;
 
@@ -93,7 +98,7 @@ fn parseStep(
     var data = try allocator.alloc(f64, ncols);
     defer allocator.free(data);
 
-    // Read the line by line
+    // Read line by line
     while (try reader.takeDelimiter('\n')) |line| {
         // Try parse as value first
         if (scan_idx != null) {
@@ -117,7 +122,6 @@ fn parseStep(
                     null,
                     ch.name,
                     attrs,
-                    options,
                 );
                 step_idx += 1;
             }
@@ -138,9 +142,8 @@ fn parseContinuous(
     h5f: *hdf5.File,
     ch: metro.Channel,
     shape: usize,
-    attrs: []hdf5.StrAttr,
+    attrs: *hdf5.AttrList,
     allocator: std.mem.Allocator,
-    options: metro.Options,
 ) !void {
     const ncols: usize = if (shape == 0) 1 else shape;
 
@@ -191,7 +194,6 @@ fn parseContinuous(
                     step_val.?,
                     ch.name,
                     attrs,
-                    options,
                 );
                 data.clearRetainingCapacity();
             }
@@ -221,7 +223,6 @@ fn parseContinuous(
                     step_val.?,
                     ch.name,
                     attrs,
-                    options,
                 );
                 data.clearRetainingCapacity();
             }
@@ -246,31 +247,18 @@ fn parseContinuous(
             step_val.?,
             ch.name,
             attrs,
-            options,
         );
     }
 }
 
-const ParamTable = struct {
-    attrs: std.ArrayList(hdf5.StrAttr) = .empty,
-    allocator: std.mem.Allocator,
+const Frequency = enum {
+    continuous,
+    step,
+    unknown,
 
-    pub fn addAttr(self: *@This(), name: []const u8, value: []const u8) !void {
-        const cname = try self.allocator.dupeSentinel(u8, name, 0);
-        errdefer self.allocator.free(cname);
-        const cvalue = try self.allocator.dupeSentinel(u8, value, 0);
-        errdefer self.allocator.free(cvalue);
-        var attr = try hdf5.StrAttr.init(cname, cvalue);
-        errdefer attr.deinit();
-        try self.attrs.append(self.allocator, attr);
-    }
-
-    pub fn deinit(self: *@This()) void {
-        for (self.attrs.items) |*attr| {
-            self.allocator.free(attr.name);
-            self.allocator.free(attr.value);
-            attr.deinit();
-        }
-        self.attrs.deinit(self.allocator);
+    fn fromString(freq: []const u8) Frequency {
+        if (std.mem.eql(u8, freq, "continuous")) return .continuous;
+        if (std.mem.eql(u8, freq, "step")) return .step;
+        return .unknown;
     }
 };

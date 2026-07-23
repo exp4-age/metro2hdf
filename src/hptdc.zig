@@ -53,11 +53,11 @@ pub fn parseChannel(
     if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
     // Create and parse parameter table
-    var param_table = ParamTable{ .allocator = allocator };
-    defer param_table.deinit();
-    param_table.addAttr("name", ch.name) catch {};
-    param_table.addAttr("mode", mode) catch {};
-    param_table.parse(&file_reader, param_table_offset, param_table_size) catch {};
+    var attrs = try hdf5.AttrList.init(allocator);
+    defer attrs.deinit();
+    attrs.append("name", ch.name) catch {};
+    attrs.append("mode", mode) catch {};
+    appendParamTable(&attrs, &file_reader, param_table_offset, param_table_size) catch {};
 
     // Create the scan table
     var scan_table = ScanTable{ .allocator = allocator };
@@ -73,7 +73,7 @@ pub fn parseChannel(
         if (rebuild_tables) try scan_table.rebuild(Hit, Hit, &file_reader);
 
         // Parse the hits and group them into events
-        try parseHits(ch, &file_reader, h5f, &scan_table, &param_table, allocator, options);
+        try parseHits(ch, &file_reader, h5f, &scan_table, &attrs, allocator, options);
     } else if (std.mem.eql(u8, mode, "GRPS")) {
         // Parse the scan table for step marker positions and data sizes
         scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size) catch {
@@ -84,7 +84,7 @@ pub fn parseChannel(
         if (rebuild_tables) try scan_table.rebuild(Word, u32, &file_reader);
 
         // Parse and decode the words and sort them into events
-        try sortEvents(&file_reader, h5f, &scan_table, &param_table, allocator, options);
+        try sortEvents(&file_reader, h5f, &scan_table, &attrs, allocator, options);
     } else {
         return error.UnknownHptdcMode;
     }
@@ -94,12 +94,11 @@ fn sortEvents(
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
     scan_table: *ScanTable,
-    param_table: *ParamTable,
+    attrs: *hdf5.AttrList,
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
     var reader = &file_reader.interface;
-    const attrs = param_table.attrs.items;
 
     // Event type P or I for either EP or EI coincidences
     const p2 = options.hptdc_event_type;
@@ -198,7 +197,7 @@ fn sortEvents(
                     const shape = if (i + j == 1) 0 else i + j;
 
                     // Write the dataset
-                    try h5f.writeSimpleDset(i32, ev.items, shape, scan_idx, step_idx, step.value, name, attrs, options);
+                    try h5f.writeSimpleDset(i32, ev.items, shape, scan_idx, step_idx, step.value, name, attrs);
 
                     // Clear the list for the next step
                     ev.clearRetainingCapacity();
@@ -213,7 +212,7 @@ fn parseHits(
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
     scan_table: *ScanTable,
-    param_table: *ParamTable,
+    attrs: *hdf5.AttrList,
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
@@ -276,7 +275,7 @@ fn parseHits(
             }
 
             // Write the dataset to the hdf5 file
-            try h5f.writeSimpleDset(i64, data.items, 8, scan_idx, step_idx, step.value, ch.name, param_table.attrs.items, options);
+            try h5f.writeSimpleDset(i64, data.items, 8, scan_idx, step_idx, step.value, ch.name, attrs);
 
             // Clear the data of this step but keep capacity for the next step
             data.clearRetainingCapacity();
@@ -472,47 +471,26 @@ const StepEntry = struct {
     data_size: i64,
 };
 
-const ParamTable = struct {
-    attrs: std.ArrayList(hdf5.StrAttr) = .empty,
-    allocator: std.mem.Allocator,
+fn appendParamTable(
+    attrs: *hdf5.AttrList,
+    file_reader: *std.Io.File.Reader,
+    offset: i64,
+    size: i32,
+) !void {
+    // Read the entire parameter table
+    try file_reader.seekTo(@intCast(offset));
+    const table = try file_reader.interface.take(@intCast(size));
 
-    pub fn addAttr(self: *@This(), name: []const u8, value: []const u8) !void {
-        const cname = try self.allocator.dupeSentinel(u8, name, 0);
-        errdefer self.allocator.free(cname);
-        const cvalue = try self.allocator.dupeSentinel(u8, value, 0);
-        errdefer self.allocator.free(cvalue);
-        var attr = try hdf5.StrAttr.init(cname, cvalue);
-        errdefer attr.deinit();
-        try self.attrs.append(self.allocator, attr);
+    // Parse line by line
+    var params = std.mem.splitScalar(u8, table, '\n');
+    while (params.next()) |line| {
+        var param = std.mem.splitScalar(u8, line, ' ');
+        const name = param.next() orelse continue;
+        const value = param.next() orelse continue;
+        if (param.next() != null) continue;
+        try attrs.append(name, value);
     }
-
-    pub fn parse(
-        self: *@This(),
-        file_reader: *std.Io.File.Reader,
-        offset: i64,
-        size: i32,
-    ) !void {
-        try file_reader.seekTo(@intCast(offset));
-        const table = try file_reader.interface.take(@intCast(size));
-        var params = std.mem.splitScalar(u8, table, '\n');
-        while (params.next()) |line| {
-            var param = std.mem.splitScalar(u8, line, ' ');
-            const name = param.next() orelse continue;
-            const value = param.next() orelse continue;
-            if (param.next() != null) continue;
-            try self.addAttr(name, value);
-        }
-    }
-
-    pub fn deinit(self: *@This()) void {
-        for (self.attrs.items) |*attr| {
-            self.allocator.free(attr.name);
-            self.allocator.free(attr.value);
-            attr.deinit();
-        }
-        self.attrs.deinit(self.allocator);
-    }
-};
+}
 
 const Hit = packed struct {
     time: i64,
