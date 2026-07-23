@@ -25,14 +25,19 @@ pub const File = struct {
         return .{ .id = id, .lcpl = lcpl };
     }
 
+    pub fn getSize(self: *@This()) !u64 {
+        if (self.id < 0) return error.H5I_INVALID_HID;
+        var size: hdf5.hsize_t = 0;
+        if (hdf5.H5Fget_filesize(self.id, @ptrCast(&size)) < 0) return error.H5Fget_filesizeError;
+        return size;
+    }
+
     pub fn close(self: *@This()) void {
         if (self.id >= 0) {
-            _ = hdf5.H5Fclose(self.id);
-            self.id = -1;
+            if (hdf5.H5Fclose(self.id) >= 0) self.id = -1;
         }
         if (self.lcpl >= 0) {
-            _ = hdf5.H5Pclose(self.lcpl);
-            self.lcpl = -1;
+            if (hdf5.H5Pclose(self.lcpl) >= 0) self.lcpl = -1;
         }
     }
 

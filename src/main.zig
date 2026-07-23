@@ -167,6 +167,8 @@ pub fn main(init: std.process.Init) !void {
     var new_files: usize = 0;
     var replaced_files: usize = 0;
     var skipped_files: usize = 0;
+    var input_size: u64 = 0;
+    var output_size: u64 = 0;
 
     while (run_table.next()) |run| {
         if (verbose) {
@@ -224,8 +226,12 @@ pub fn main(init: std.process.Init) !void {
                 try stdout_writer.flush();
             }
 
+            // Open input file
+            var file = try dir.openFile(io, ch.path, .{ .mode = .read_only });
+            defer file.close(io);
+
             // Parse data and write to the hdf5 file
-            ch.parse(&h5f, io, allocator, options) catch |err| {
+            ch.parse(&file, &h5f, io, allocator, options) catch |err| {
                 skipped_channels += 1;
                 if (verbose) {
                     try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
@@ -235,11 +241,17 @@ pub fn main(init: std.process.Init) !void {
             };
             processed_channels += 1;
 
+            if (file.stat(io)) |stat| {
+                input_size += stat.size;
+            } else |_| {}
+
             if (verbose) {
                 try stdout_writer.printAscii("done\n", .{});
                 try stdout_writer.flush();
             }
         }
+
+        output_size += h5f.getSize() catch 0;
 
         if (verbose) {
             try stdout_writer.printAsciiChar('\n', .{});
@@ -254,6 +266,7 @@ pub fn main(init: std.process.Init) !void {
         matching_run_files,
         skipped_run_files,
     });
+
     try stdout_writer.printAscii("HDF5 output     : ", .{});
     try stdout_writer.print("{d} written ({d} new, {d} replaced, {d} skipped)\n", .{
         new_files + replaced_files,
@@ -261,13 +274,50 @@ pub fn main(init: std.process.Init) !void {
         replaced_files,
         skipped_files,
     });
+
     try stdout_writer.printAscii("Channels        : ", .{});
     try stdout_writer.print("{d} total ({d} skipped)\n", .{
         processed_channels,
         skipped_channels,
     });
+
+    const elapsed_time = timer_start.untilNow(io, clock);
+    const elapsed_time_in_s = @max(elapsed_time.toSeconds(), 1);
+
+    try stdout_writer.printAscii("Read bytes      : ", .{});
+    try formatFilesize(stdout_writer, input_size);
+    try stdout_writer.printAscii(" total (", .{});
+    try formatFilesize(stdout_writer, try std.math.divCeil(u64, input_size, elapsed_time_in_s));
+    try stdout_writer.printAscii(" / s)\n", .{});
+
+    try stdout_writer.printAscii("Write bytes     : ", .{});
+    try formatFilesize(stdout_writer, output_size);
+    try stdout_writer.printAscii(" total (", .{});
+    try formatFilesize(stdout_writer, try std.math.divCeil(u64, output_size, elapsed_time_in_s));
+    try stdout_writer.printAscii(" / s)\n", .{});
+
     try stdout_writer.printAscii("Elapsed time    : ", .{});
-    try timer_start.untilNow(io, clock).format(stdout_writer);
+    try elapsed_time.format(stdout_writer);
     try stdout_writer.printAsciiChar('\n', .{});
     try stdout_writer.flush();
+}
+
+fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
+    var bytes_remaining = bytes;
+    inline for (.{
+        .{ .bytes = 1000000000000, .sep = 'T' },
+        .{ .bytes = 1000000000, .sep = 'G' },
+        .{ .bytes = 1000000, .sep = 'M' },
+        .{ .bytes = 1000, .sep = 'k' },
+    }) |unit| {
+        if (bytes_remaining >= unit.bytes) {
+            const units = bytes_remaining / unit.bytes;
+            try w.printInt(units, 10, .lower, .{});
+            try w.writeByte(unit.sep);
+            if (unit.sep != 'k') try w.writeByte(' ');
+            bytes_remaining -= units * unit.bytes;
+            if (bytes_remaining == 0) return;
+        }
+    }
+
 }

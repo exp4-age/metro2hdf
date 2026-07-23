@@ -232,22 +232,19 @@ pub const Channel = struct {
 
     pub fn parse(
         self: @This(),
+        file: *std.Io.File,
         h5f: *hdf5.File,
         io: std.Io,
         allocator: std.mem.Allocator,
         options: Options,
     ) !void {
-        // Open input file
-        var file = try std.Io.Dir.cwd().openFile(io, self.path, .{ .mode = .read_only });
-        defer file.close(io);
-
         // Call the parser based on the file format
         switch (self.format) {
             .txt => {
-                try tsv.parseChannel(self, &file, h5f, io, allocator, options);
+                try tsv.parseChannel(self, file, h5f, io, allocator, options);
             },
             .tdc => {
-                try hptdc.parseChannel(self, &file, h5f, io, allocator, options);
+                try hptdc.parseChannel(self, file, h5f, io, allocator, options);
             },
             else => {
                 return error.UnknownFormat;
