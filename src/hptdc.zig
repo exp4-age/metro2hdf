@@ -434,8 +434,7 @@ const StepTable = struct {
         data_size: i64,
     ) !void {
         if (step_val) |val| {
-            const len = std.mem.findScalar(u8, val, 0) orelse val.len;
-            const value = try self.allocator.dupeSentinel(u8, val[0..len], 0);
+            const value = try self.allocator.dupeSentinel(u8, std.mem.trim(u8, val, &.{0}), 0);
             errdefer self.allocator.free(value);
             try self.steps.append(
                 self.allocator,
