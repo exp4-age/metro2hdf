@@ -24,6 +24,10 @@ pub const RunTable = struct {
         };
     }
 
+    pub fn getLength(self: *@This()) usize {
+        return self.sorting.items.len;
+    }
+
     pub fn addChannel(
         self: *@This(),
         path: []const u8,

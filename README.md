@@ -38,8 +38,6 @@ Usage: metro2hdf [OPTIONS]...
   -i, --include=CHANNEL           include only matching channels in
                                   the processing
       --replace                   overwrite existing files
-      --verbose                   write processed runs and channels
-                                  to stdout
       --help                      show this help and exit
 
 HPTDC OPTIONS

@@ -17,8 +17,6 @@ const usage =
     \\  -i, --include=CHANNEL           include only matching channels in
     \\                                  the processing
     \\      --replace                   overwrite existing files
-    \\      --verbose                   write processed runs and channels
-    \\                                  to stdout
     \\      --help                      show this help and exit
     \\
     \\HPTDC OPTIONS
@@ -38,14 +36,10 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !void {
-    // Get the io instance and initialize stdout
     const io = init.io;
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
 
     // Track the time
-    const clock: std.Io.Clock = .real;
+    const clock: Io.Clock = .real;
     const timer_start = clock.now(io);
 
     // Get the c allocator because we interface with hdf5
@@ -55,7 +49,6 @@ pub fn main(init: std.process.Init) !void {
     var pattern: [:0]const u8 = "*";
     var output_dir: []const u8 = ".";
     var replace = false;
-    var verbose = false;
     var exclude: std.ArrayList([:0]const u8) = .empty;
     defer exclude.deinit(allocator);
     var include: std.ArrayList([:0]const u8) = .empty;
@@ -90,8 +83,6 @@ pub fn main(init: std.process.Init) !void {
             try include.append(allocator, arg[3..]);
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
-        } else if (std.mem.eql(u8, arg, "--verbose")) {
-            verbose = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-rebuild-tables")) {
             options.hptdc_rebuild_tables = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {
@@ -112,23 +103,22 @@ pub fn main(init: std.process.Init) !void {
                 return err;
             }
         } else if (std.mem.eql(u8, arg, "--help")) {
-            try stdout_writer.printAscii(usage, .{});
-            try stdout_writer.flush();
+            std.log.info("{s}", .{usage});
             return;
         } else {
             return error.UnknownArgument;
         }
     }
 
+    const parent_progress_node = std.Progress.start(io, .{ .root_name = "μετρο2hdf" });
+    defer parent_progress_node.end();
+
     // Get current working directory for glob'ing
     const dir = try Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
     defer dir.close(io);
 
     // Try opening output directory
-    const out_dir = dir.openDir(io, output_dir, .{}) catch |err| {
-        std.log.info("could not open output directory {s}", .{output_dir});
-        return err;
-    };
+    const out_dir = try dir.openDir(io, output_dir, .{});
     defer out_dir.close(io);
 
     // Keep track of already touched files
@@ -139,6 +129,7 @@ pub fn main(init: std.process.Init) !void {
     var matching_run_files: usize = 0;
     var skipped_run_files: usize = 0;
 
+    // Start glob'ing of files
     var walker = try Io.Dir.walk(dir, allocator);
     defer walker.deinit();
 
@@ -154,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path, exclude.items, include.items) catch |err| {
             if (err != error.ExcludedChannel) {
-                std.log.info("skipping {s}: {s}", .{ entry.path, @errorName(err) });
+                std.log.warn("skipping {s}: {s}", .{ entry.path, @errorName(err) });
             }
             skipped_run_files += 1;
             continue;
@@ -170,12 +161,11 @@ pub fn main(init: std.process.Init) !void {
     var input_size: u64 = 0;
     var output_size: u64 = 0;
 
-    while (run_table.next()) |run| {
-        if (verbose) {
-            try stdout_writer.print("run {s}:\n", .{run.num});
-            try stdout_writer.flush();
-        }
+    // Start processing of runs
+    const progress_runs = parent_progress_node.start("runs", run_table.getLength());
+    errdefer progress_runs.end();
 
+    while (run_table.next()) |run| {
         // Construct name and path for the hdf5 file
         const filename = try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
         defer allocator.free(filename);
@@ -219,12 +209,11 @@ pub fn main(init: std.process.Init) !void {
         h5f.writeRootAttrs(run, allocator) catch {};
 
         // Iterate over all channels
+        const progress_channels = progress_runs.start("channels", run.channels.items.len);
+        defer progress_channels.end();
+
         for (run.channels.items) |ch| {
-            // Update stdout to indicate the channel that is being processed
-            if (verbose) {
-                try stdout_writer.print("  {s} ... ", .{ch.name});
-                try stdout_writer.flush();
-            }
+            progress_channels.completeOne();
 
             // Open input file
             var file = try dir.openFile(io, ch.path, .{ .mode = .read_only });
@@ -232,11 +221,8 @@ pub fn main(init: std.process.Init) !void {
 
             // Parse data and write to the hdf5 file
             ch.parse(&file, &h5f, io, allocator, options) catch |err| {
+                std.log.err("skipping {s}: {s}", .{ ch.name, @errorName(err) });
                 skipped_channels += 1;
-                if (verbose) {
-                    try stdout_writer.print("skipping: {s}\n", .{@errorName(err)});
-                    try stdout_writer.flush();
-                }
                 continue;
             };
             processed_channels += 1;
@@ -244,22 +230,18 @@ pub fn main(init: std.process.Init) !void {
             if (file.stat(io)) |stat| {
                 input_size += stat.size;
             } else |_| {}
-
-            if (verbose) {
-                try stdout_writer.printAscii("done\n", .{});
-                try stdout_writer.flush();
-            }
         }
 
         output_size += h5f.getSize() catch 0;
-
-        if (verbose) {
-            try stdout_writer.printAsciiChar('\n', .{});
-            try stdout_writer.flush();
-        }
     }
 
+    progress_runs.end();
+
     // Print summary
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
+    const stdout_writer = &stdout_file_writer.interface;
+
     try stdout_writer.printAscii("μετρο2hdf summary\n", .{});
     try stdout_writer.printAscii("Processed files : ", .{});
     try stdout_writer.print("{d} matching ({d} skipped)\n", .{
@@ -302,7 +284,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout_writer.flush();
 }
 
-fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
+fn formatFilesize(w: *Io.Writer, bytes: u64) Io.Writer.Error!void {
     const bytes_remaining = bytes;
     inline for (.{
         .{ .bytes = 1000000000000, .sep = "T" },
@@ -317,7 +299,7 @@ fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
             if (frac > 0) {
                 // Write up to 3 decimal places
                 var decimal_buf = [_]u8{ '.', 0, 0, 0 };
-                var inner: std.Io.Writer = .fixed(decimal_buf[1..]);
+                var inner: Io.Writer = .fixed(decimal_buf[1..]);
                 inner.printInt(frac, 10, .lower, .{ .fill = '0', .width = 3 }) catch unreachable;
                 var end: usize = 4;
                 while (end > 1) : (end -= 1) {
