@@ -288,13 +288,13 @@ pub fn main(init: std.process.Init) !void {
     try formatFilesize(stdout_writer, input_size);
     try stdout_writer.printAscii(" total (", .{});
     try formatFilesize(stdout_writer, try std.math.divCeil(u64, input_size, elapsed_time_in_s));
-    try stdout_writer.printAscii(" / s)\n", .{});
+    try stdout_writer.printAscii("/s)\n", .{});
 
     try stdout_writer.printAscii("Write bytes     : ", .{});
     try formatFilesize(stdout_writer, output_size);
     try stdout_writer.printAscii(" total (", .{});
     try formatFilesize(stdout_writer, try std.math.divCeil(u64, output_size, elapsed_time_in_s));
-    try stdout_writer.printAscii(" / s)\n", .{});
+    try stdout_writer.printAscii("/s)\n", .{});
 
     try stdout_writer.printAscii("Elapsed time    : ", .{});
     try elapsed_time.format(stdout_writer);
@@ -303,21 +303,32 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
-    var bytes_remaining = bytes;
+    const bytes_remaining = bytes;
     inline for (.{
-        .{ .bytes = 1000000000000, .sep = 'T' },
-        .{ .bytes = 1000000000, .sep = 'G' },
-        .{ .bytes = 1000000, .sep = 'M' },
-        .{ .bytes = 1000, .sep = 'k' },
+        .{ .bytes = 1000000000000, .sep = "T" },
+        .{ .bytes = 1000000000, .sep = "G" },
+        .{ .bytes = 1000000, .sep = "M" },
+        .{ .bytes = 1000, .sep = "k" },
     }) |unit| {
-        if (bytes_remaining >= unit.bytes) {
-            const units = bytes_remaining / unit.bytes;
-            try w.printInt(units, 10, .lower, .{});
-            try w.writeByte(unit.sep);
-            if (unit.sep != 'k') try w.writeByte(' ');
-            bytes_remaining -= units * unit.bytes;
-            if (bytes_remaining == 0) return;
+        const units = bytes_remaining * 1000 / unit.bytes;
+        if (units >= 1000) {
+            try w.printInt(units / 1000, 10, .lower, .{});
+            const frac = units % 1000;
+            if (frac > 0) {
+                // Write up to 3 decimal places
+                var decimal_buf = [_]u8{ '.', 0, 0, 0 };
+                var inner: std.Io.Writer = .fixed(decimal_buf[1..]);
+                inner.printInt(frac, 10, .lower, .{ .fill = '0', .width = 3 }) catch unreachable;
+                var end: usize = 4;
+                while (end > 1) : (end -= 1) {
+                    if (decimal_buf[end - 1] != '0') break;
+                }
+                try w.writeAll(decimal_buf[0..end]);
+            }
+            return w.writeAll(unit.sep);
         }
     }
 
+    try w.printInt(bytes_remaining, 10, .lower, .{});
+    try w.writeAll("bytes");
 }
