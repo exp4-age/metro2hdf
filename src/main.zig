@@ -38,6 +38,10 @@ const usage =
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
+    const stdout_writer = &stdout_file_writer.interface;
+
     // Track the time
     const clock: Io.Clock = .real;
     const timer_start = clock.now(io);
@@ -64,8 +68,10 @@ pub fn main(init: std.process.Init) !void {
 
     while (args.next()) |arg| {
         // Show usage if argument parsing fails
-        errdefer std.log.info("Could not parse argument: {s}", .{arg});
-        errdefer std.log.info("{s}", .{usage});
+        errdefer |err| {
+            std.log.err("could not parse argument '{s}': {s}", .{ arg, @errorName(err) });
+            std.log.info("{s}", .{usage});
+        }
 
         if (std.mem.startsWith(u8, arg, "--glob=")) {
             pattern = arg[7..];
@@ -90,20 +96,14 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {
             options.hptdc_event_type = 'I';
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-filter=")) {
-            if (std.fmt.parseInt(u8, arg[19..], 2)) |filter| {
-                options.hptdc_hit_filter = filter;
-            } else |err| {
-                return err;
-            }
+            options.hptdc_hit_filter = try std.fmt.parseInt(u8, arg[19..], 2);
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-mcp=")) {
-            if (std.fmt.parseInt(u64, arg[16..], 10)) |channel| {
-                if (channel > 7) return error.UnsupportedTdcChannel;
-                options.hptdc_hit_mcp = @intCast(channel);
-            } else |err| {
-                return err;
-            }
+            const channel = try std.fmt.parseInt(u64, arg[16..], 10);
+            if (channel > 7) return error.UnsupportedTdcChannel;
+            options.hptdc_hit_mcp = @intCast(channel);
         } else if (std.mem.eql(u8, arg, "--help")) {
-            std.log.info("{s}", .{usage});
+            stdout_writer.writeAll(usage) catch {};
+            stdout_writer.flush() catch {};
             return;
         } else {
             return error.UnknownArgument;
@@ -145,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path, exclude.items, include.items) catch |err| {
             if (err != error.ExcludedChannel) {
-                std.log.warn("skipping {s}: {s}", .{ entry.path, @errorName(err) });
+                std.log.warn("could not parse file name '{s}': {}", .{ entry.path, err });
             }
             skipped_run_files += 1;
             continue;
@@ -178,12 +178,12 @@ pub fn main(init: std.process.Init) !void {
         // Check if the file already exists
         if (out_dir.access(io, filename, .{ .read = true, .write = true })) {
             if (!replace) {
-                std.log.info("skipping {s}: file already exists", .{filepath});
+                std.log.info("skipping '{s}': file already exists", .{filepath});
                 skipped_files += 1;
                 continue;
             } else {
                 out_dir.deleteFile(io, filename) catch |err| {
-                    std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
+                    std.log.warn("could not replace '{s}': {}", .{ filepath, err });
                     skipped_files += 1;
                     continue;
                 };
@@ -194,7 +194,7 @@ pub fn main(init: std.process.Init) !void {
                 new_files += 1;
             },
             else => {
-                std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
+                std.log.warn("could not access '{s}': {}", .{ filepath, err });
                 skipped_files += 1;
             },
         }
@@ -203,7 +203,7 @@ pub fn main(init: std.process.Init) !void {
         const path = try allocator.dupeSentinel(u8, filepath, 0);
         defer allocator.free(path);
         var h5f = hdf5.File.create(path) catch |err| {
-            std.log.err("skipping {s}: {s}", .{ filepath, @errorName(err) });
+            std.log.warn("could not create hdf5 file '{s}': {}", .{ filepath, err });
             continue;
         };
         defer h5f.close();
@@ -224,16 +224,32 @@ pub fn main(init: std.process.Init) !void {
             defer file.close(io);
 
             // Parse data and write to the hdf5 file
-            ch.parse(&file, &h5f, io, allocator, options) catch |err| {
-                std.log.err("skipping {s}: {s}", .{ ch.name, @errorName(err) });
-                skipped_channels += 1;
-                continue;
-            };
-            processed_channels += 1;
-
-            if (file.stat(io)) |stat| {
-                input_size += stat.size;
-            } else |_| {}
+            if (ch.parse(&file, &h5f, io, allocator, options)) {
+                // Add the size of the parsed file
+                if (file.stat(io)) |stat| {
+                    input_size += stat.size;
+                } else |_| {}
+                processed_channels += 1;
+            } else |err| switch (err) {
+                error.UnknownFormat => {
+                    std.log.warn("unsupported format '{}' of channel '{s}' in run '{s}'", .{
+                        ch.format,
+                        ch.name,
+                        run.num,
+                    });
+                    skipped_channels += 1;
+                },
+                error.UnsupportedChannel => {
+                    std.log.warn("unsupported channel '{s}' in run '{s}'", .{
+                        ch.name,
+                        run.num,
+                    });
+                    skipped_channels += 1;
+                },
+                else => {
+                    skipped_channels += 1;
+                },
+            }
         }
 
         output_size += h5f.getSize() catch 0;
@@ -243,10 +259,6 @@ pub fn main(init: std.process.Init) !void {
     progress_runs.end();
 
     // Print summary
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
-
     try stdout_writer.printAscii("μετρο2hdf summary\n", .{});
     try stdout_writer.printAscii("Processed files : ", .{});
     try stdout_writer.print("{d} matching ({d} skipped)\n", .{
