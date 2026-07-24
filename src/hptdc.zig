@@ -86,7 +86,7 @@ pub fn parseChannel(
         // Parse and decode the words and sort them into events
         try sortEvents(&file_reader, h5f, &scan_table, &attrs, allocator, options);
     } else {
-        return error.UnknownHptdcMode;
+        return error.UnknownMode;
     }
 }
 
@@ -229,9 +229,12 @@ fn parseHits(
     const filter = options.hptdc_hit_filter;
 
     // Accumulate time signals of a single event in an array
-    var times: [8]i64 = @splat(0);
+    var int_buf: [8]i64 = @splat(0);
 
-    var data: std.ArrayList(i64) = .empty;
+    // Write dataset as f64
+    var float_buf: [8]f64 = @splat(0);
+
+    var data: std.ArrayList(f64) = .empty;
     defer data.deinit(allocator);
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
@@ -252,11 +255,12 @@ fn parseHits(
                 if (hit.channel == mcp_channel) {
                     // New MCP signal: process last event
                     if (mask == filter) {
-                        try data.appendSlice(allocator, &times);
+                        for (int_buf, 0..) |t, i| float_buf[i] = @floatFromInt(t);
+                        try data.appendSlice(allocator, &float_buf);
                     }
 
                     // Reset times and mask
-                    times = @splat(0);
+                    int_buf = @splat(0);
                     mask = 0;
                 } else if (hit.channel > 7) {
                     // More than 8 tdc channels are currently not supported
@@ -271,7 +275,7 @@ fn parseHits(
                 // if a channel triggered multiple times only the first time is used
                 if (~mask & bit != 0) {
                     // Store the time and update the mask
-                    times[hit.channel] = hit.time;
+                    int_buf[hit.channel] = hit.time;
                     mask |= bit;
                 }
             }
@@ -279,7 +283,7 @@ fn parseHits(
             if (data.items.len == 0) continue;
 
             // Write the dataset to the hdf5 file
-            try h5f.writeSimpleDset(i64, data.items, 8, scan_idx, step_idx, step.value, ch.name, attrs);
+            try h5f.writeSimpleDset(f64, data.items, 8, scan_idx, step_idx, step.value, ch.name, attrs);
 
             // Clear the data of this step but keep capacity for the next step
             data.clearRetainingCapacity();
