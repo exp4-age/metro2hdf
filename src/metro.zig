@@ -294,3 +294,34 @@ fn isTime(str: []const u8) bool {
     const ss = (str[4] - '0') * 10 + (str[5] - '0');
     return hh >= 0 and hh < 24 and mm >= 0 and mm < 60 and ss >= 0 and ss < 60;
 }
+
+pub fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
+    const bytes_remaining = bytes;
+    inline for (.{
+        .{ .bytes = 1000000000000, .sep = "T" },
+        .{ .bytes = 1000000000, .sep = "G" },
+        .{ .bytes = 1000000, .sep = "M" },
+        .{ .bytes = 1000, .sep = "k" },
+    }) |unit| {
+        const units = bytes_remaining * 1000 / unit.bytes;
+        if (units >= 1000) {
+            try w.printInt(units / 1000, 10, .lower, .{});
+            const frac = units % 1000;
+            if (frac > 0) {
+                // Write up to 3 decimal places
+                var decimal_buf = [_]u8{ '.', 0, 0, 0 };
+                var inner: std.Io.Writer = .fixed(decimal_buf[1..]);
+                inner.printInt(frac, 10, .lower, .{ .fill = '0', .width = 3 }) catch unreachable;
+                var end: usize = 4;
+                while (end > 1) : (end -= 1) {
+                    if (decimal_buf[end - 1] != '0') break;
+                }
+                try w.writeAll(decimal_buf[0..end]);
+            }
+            return w.writeAll(unit.sep);
+        }
+    }
+
+    try w.printInt(bytes_remaining, 10, .lower, .{});
+    try w.writeAll("bytes");
+}

@@ -172,6 +172,9 @@ pub fn main(init: std.process.Init) !void {
         const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{ output_dir, filename });
         defer allocator.free(filepath);
 
+        // Show which file is being written
+        progress_runs.setName(filename);
+
         // Check if the file already exists
         if (out_dir.access(io, filename, .{ .read = true, .write = true })) {
             if (!replace) {
@@ -213,6 +216,7 @@ pub fn main(init: std.process.Init) !void {
         defer progress_channels.end();
 
         for (run.channels.items) |ch| {
+            progress_channels.setName(ch.name);
             progress_channels.completeOne();
 
             // Open input file
@@ -235,6 +239,7 @@ pub fn main(init: std.process.Init) !void {
         output_size += h5f.getSize() catch 0;
     }
 
+    // End progress to clear stderr
     progress_runs.end();
 
     // Print summary
@@ -267,50 +272,19 @@ pub fn main(init: std.process.Init) !void {
     const elapsed_time_in_s = @max(elapsed_time.toSeconds(), 1);
 
     try stdout_writer.printAscii("Read bytes      : ", .{});
-    try formatFilesize(stdout_writer, input_size);
+    try metro.formatFilesize(stdout_writer, input_size);
     try stdout_writer.printAscii(" total (", .{});
-    try formatFilesize(stdout_writer, try std.math.divCeil(u64, input_size, elapsed_time_in_s));
+    try metro.formatFilesize(stdout_writer, try std.math.divCeil(u64, input_size, elapsed_time_in_s));
     try stdout_writer.printAscii("/s)\n", .{});
 
     try stdout_writer.printAscii("Write bytes     : ", .{});
-    try formatFilesize(stdout_writer, output_size);
+    try metro.formatFilesize(stdout_writer, output_size);
     try stdout_writer.printAscii(" total (", .{});
-    try formatFilesize(stdout_writer, try std.math.divCeil(u64, output_size, elapsed_time_in_s));
+    try metro.formatFilesize(stdout_writer, try std.math.divCeil(u64, output_size, elapsed_time_in_s));
     try stdout_writer.printAscii("/s)\n", .{});
 
     try stdout_writer.printAscii("Elapsed time    : ", .{});
     try elapsed_time.format(stdout_writer);
     try stdout_writer.printAsciiChar('\n', .{});
     try stdout_writer.flush();
-}
-
-fn formatFilesize(w: *Io.Writer, bytes: u64) Io.Writer.Error!void {
-    const bytes_remaining = bytes;
-    inline for (.{
-        .{ .bytes = 1000000000000, .sep = "T" },
-        .{ .bytes = 1000000000, .sep = "G" },
-        .{ .bytes = 1000000, .sep = "M" },
-        .{ .bytes = 1000, .sep = "k" },
-    }) |unit| {
-        const units = bytes_remaining * 1000 / unit.bytes;
-        if (units >= 1000) {
-            try w.printInt(units / 1000, 10, .lower, .{});
-            const frac = units % 1000;
-            if (frac > 0) {
-                // Write up to 3 decimal places
-                var decimal_buf = [_]u8{ '.', 0, 0, 0 };
-                var inner: Io.Writer = .fixed(decimal_buf[1..]);
-                inner.printInt(frac, 10, .lower, .{ .fill = '0', .width = 3 }) catch unreachable;
-                var end: usize = 4;
-                while (end > 1) : (end -= 1) {
-                    if (decimal_buf[end - 1] != '0') break;
-                }
-                try w.writeAll(decimal_buf[0..end]);
-            }
-            return w.writeAll(unit.sep);
-        }
-    }
-
-    try w.printInt(bytes_remaining, 10, .lower, .{});
-    try w.writeAll("bytes");
 }
