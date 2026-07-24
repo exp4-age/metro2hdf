@@ -17,6 +17,7 @@ pub fn parseChannel(
     var reader = &file_reader.interface;
 
     var rebuild_tables = options.hptdc_rebuild_tables;
+    var old_style: bool = false;
 
     // Check for HPTDC marker
     if (!std.mem.eql(u8, try reader.take(5), "HPTDC")) return error.CorruptedHeader;
@@ -29,64 +30,94 @@ pub fn parseChannel(
     if (header_size < 32) return error.CorruptedHeader;
 
     const version = try reader.takeInt(i32, .little);
-    _ = &version;
 
-    // HPTDC mode (HITS, GRPS)
-    var buf: [5]u8 = undefined;
-    const mode = std.fmt.bufPrintSentinel(&buf, "{s}", .{try reader.take(4)}, 0) catch unreachable;
+    var mode: Mode = .HITS;
+    var scan_table_offset: i64 = undefined;
+    var scan_table_size: i32 = undefined;
+    var param_table_offset: i64 = undefined;
+    var param_table_size: i32 = undefined;
 
-    // Where and how big is the scan table?
-    const scan_table_offset = try reader.takeInt(i64, .little);
-    const scan_table_size = try reader.takeInt(i32, .little);
-    if (scan_table_offset < header_size + 4) rebuild_tables = true;
+    if (std.meta.stringToEnum(Mode, try reader.peek(4))) |m| {
+        reader.toss(4);
 
-    // Where and how big is the parameter table?
-    const param_table_offset = try reader.takeInt(i64, .little);
-    const param_table_size = try reader.takeInt(i32, .little);
+        // HPTDC mode (HITS, GRPS)
+        mode = m;
 
-    // Skip additional header if present
-    // header_size does not include "HPTDC" and i32 header_size itself,
-    // so add 9 bytes
-    try file_reader.seekTo(@intCast(header_size + 9));
+        // Where and how big is the scan table?
+        scan_table_offset = try reader.takeInt(i64, .little);
+        if (scan_table_offset < header_size + 4) rebuild_tables = true;
+        scan_table_size = try reader.takeInt(i32, .little);
+        if (scan_table_size < 0) rebuild_tables = true;
 
-    // Next should be 'DATA' in supported versions
-    if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
+        // Where and how big is the parameter table?
+        param_table_offset = try reader.takeInt(i64, .little);
+        param_table_size = try reader.takeInt(i32, .little);
+
+        // Skip additional header if present
+        // header_size does not include "HPTDC" and i32 header_size itself,
+        // so add 9 bytes
+        try file_reader.seekTo(@intCast(header_size + 9));
+
+        // Next should be the 'DATA' marker
+        if (!std.mem.eql(u8, try reader.take(4), "DATA")) rebuild_tables = true;
+    } else {
+        // Failed to get the mode: try parsing the old header style
+        old_style = true;
+
+        // The old style had no header size and version and offset was i32
+        scan_table_offset = header_size;
+        scan_table_size = version;
+        param_table_offset = try reader.takeInt(i32, .little);
+        param_table_size = try reader.takeInt(i32, .little);
+
+        // Assume HITS mode by default unless next byte is 'G'
+        if (try reader.takeByte() == 'G') mode = .GRPS;
+    }
 
     // Create and parse parameter table, it is okay if it fails
-    var attrs = try hdf5.AttrList.init(allocator);
+    var attrs: hdf5.AttrList = try .init(allocator);
     defer attrs.deinit();
     attrs.append("name", ch.name) catch {};
-    attrs.append("mode", mode) catch {};
-    appendParamTable(&attrs, &file_reader, param_table_offset, param_table_size) catch {};
+    attrs.append("mode", @tagName(mode)) catch {};
 
-    // Create the scan table
-    var scan_table = ScanTable{ .allocator = allocator };
+    if (param_table_size > 0 and param_table_offset > header_size) {
+        appendParamTable(&attrs, &file_reader, param_table_offset, param_table_size) catch {};
+    }
+
+    var scan_table: ScanTable = .{ .allocator = allocator };
     defer scan_table.deinit();
 
-    if (std.mem.eql(u8, mode, "HITS")) {
-        // Parse the scan table for step marker positions and data sizes
-        scan_table.parse(Hit, &file_reader, scan_table_offset, scan_table_size) catch {
-            rebuild_tables = true;
-        };
+    switch (mode) {
+        .HITS => {
+            // Parse or rebuild the scan table
+            try scan_table.parseOrRebuild(
+                Hit,
+                Hit,
+                &file_reader,
+                scan_table_offset,
+                scan_table_size,
+                old_style,
+                rebuild_tables,
+            );
 
-        // Rebuild the step tables if parse failed or specifically requested
-        if (rebuild_tables) try scan_table.rebuild(Hit, Hit, &file_reader);
+            // Parse the hits and group them into events
+            try parseHits(ch, &file_reader, h5f, &scan_table, &attrs, allocator, options);
+        },
+        .GRPS => {
+            // Parse or rebuild the scan table
+            try scan_table.parseOrRebuild(
+                Word,
+                u32,
+                &file_reader,
+                scan_table_offset,
+                scan_table_size,
+                old_style,
+                rebuild_tables,
+            );
 
-        // Parse the hits and group them into events
-        try parseHits(ch, &file_reader, h5f, &scan_table, &attrs, allocator, options);
-    } else if (std.mem.eql(u8, mode, "GRPS")) {
-        // Parse the scan table for step marker positions and data sizes
-        scan_table.parse(u32, &file_reader, scan_table_offset, scan_table_size) catch {
-            rebuild_tables = true;
-        };
-
-        // Rebuild the step tables if parse failed or specifically requested
-        if (rebuild_tables) try scan_table.rebuild(Word, u32, &file_reader);
-
-        // Parse and decode the words and sort them into events
-        try sortEvents(&file_reader, h5f, &scan_table, &attrs, allocator, options);
-    } else {
-        return error.UnknownMode;
+            // Parse and decode the words and sort them into events
+            try sortEvents(&file_reader, h5f, &scan_table, &attrs, allocator, options);
+        },
     }
 }
 
@@ -139,7 +170,7 @@ fn sortEvents(
             var p_buf: [max_count]i32 = undefined;
 
             // Decode the words and sort by event category
-            const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
+            const n: usize = @intCast(@divExact(step.data_size, 4));
             for (0..n) |_| {
                 const word = try DecodedWord.decode(try reader.takeInt(u32, .little));
                 switch (word.type) {
@@ -291,17 +322,46 @@ fn parseHits(
     }
 }
 
+const Mode = enum {
+    HITS,
+    GRPS,
+};
+
 const ScanTable = struct {
     scans: std.ArrayList(StepTable) = .empty,
     allocator: std.mem.Allocator,
 
-    pub fn append(self: *@This(), step_table: StepTable) !void {
+    fn parseOrRebuild(
+        self: *@This(),
+        comptime Marker: type,
+        comptime Datum: type,
+        file_reader: *std.Io.File.Reader,
+        offset: i64,
+        size: i32,
+        old_style: bool,
+        rebuild_tables: bool,
+    ) !void {
+        if (rebuild_tables) {
+            try self.rebuild(Marker, Datum, file_reader);
+        } else if (old_style) {
+            self.parse(i32, Datum, file_reader, offset, size) catch {
+                try self.rebuild(Marker, Datum, file_reader);
+            };
+        } else {
+            self.parse(i64, Datum, file_reader, offset, size) catch {
+                try self.rebuild(Marker, Datum, file_reader);
+            };
+        }
+    }
+
+    fn append(self: *@This(), step_table: StepTable) !void {
         try self.scans.append(self.allocator, step_table);
     }
 
-    pub fn parse(
+    fn parse(
         self: *@This(),
-        comptime T: type,
+        comptime Entry: type,
+        comptime Datum: type,
         file_reader: *std.Io.File.Reader,
         offset: i64,
         size: i32,
@@ -324,9 +384,9 @@ const ScanTable = struct {
 
             while (step_idx < step_count) {
                 const value = try reader.take(32);
-                const data_offset = try reader.takeInt(i64, .little);
-                const data_size = try reader.takeInt(i64, .little);
-                if (data_size < 0 or @mod(data_size, @sizeOf(T)) != 0) {
+                const data_offset = try reader.takeInt(Entry, .little);
+                const data_size = try reader.takeInt(Entry, .little);
+                if (data_size < 0 or @mod(data_size, @sizeOf(Datum)) != 0) {
                     return error.CorruptedStepTable;
                 } else {
                     try step_table.append(value, data_offset, data_size);
@@ -338,17 +398,17 @@ const ScanTable = struct {
         }
     }
 
-    pub fn rebuild(
+    fn rebuild(
         self: *@This(),
-        comptime MarkerT: type,
-        comptime DataT: type,
+        comptime Marker: type,
+        comptime Datum: type,
         file_reader: *std.Io.File.Reader,
     ) !void {
         comptime {
-            if (@hasField(MarkerT, "scan_marker")) {
+            if (@hasField(Marker, "scan_marker")) {
                 @compileError("Field scan_marker required");
             }
-            if (@hasField(MarkerT, "step_marker")) {
+            if (@hasField(Marker, "step_marker")) {
                 @compileError("Field step_marker required");
             }
         }
@@ -364,9 +424,9 @@ const ScanTable = struct {
         var reader = &file_reader.interface;
 
         // Find the first scan marker
-        while (reader.peekStruct(MarkerT, .little)) |marker| {
+        while (reader.peekStruct(Marker, .little)) |marker| {
             // Stop when the first scan marker is found
-            if (marker == MarkerT.scan_marker) break;
+            if (marker == Marker.scan_marker) break;
             // Advance by one byte and try again
             reader.toss(1);
         } else |_| {
@@ -375,18 +435,18 @@ const ScanTable = struct {
 
         // Current seek position is at the first scan marker
 
-        while (reader.peekStruct(MarkerT, .little)) |marker| {
+        while (reader.peekStruct(Marker, .little)) |marker| {
             // End of data
-            if (marker != MarkerT.scan_marker) break;
+            if (marker != Marker.scan_marker) break;
 
             // Advance to the step marker
-            reader.toss(@sizeOf(MarkerT));
+            reader.toss(@sizeOf(Marker));
 
             // Get the current seek position
             var data_offset: usize = file_reader.logicalPos();
 
             // Check if next is actually a step marker
-            if (try reader.takeStruct(MarkerT, .little) != MarkerT.step_marker) break;
+            if (try reader.takeStruct(Marker, .little) != Marker.step_marker) break;
 
             // Create a new step table and deinit on error
             var step_table = StepTable{ .allocator = self.allocator };
@@ -395,24 +455,24 @@ const ScanTable = struct {
             // Keep track of data size
             var data_size: usize = 0;
 
-            while (reader.peekStruct(MarkerT, .little)) |data_or_marker| {
-                if (data_or_marker == MarkerT.step_marker) {
+            while (reader.peekStruct(Marker, .little)) |data_or_marker| {
+                if (data_or_marker == Marker.step_marker) {
                     // Found next step marker: append last step to the table
                     try step_table.append(null, @intCast(data_offset), @intCast(data_size));
                     // Remember position before tossing the marker
                     data_offset = file_reader.logicalPos();
                     data_size = 0;
                     // Advance by size of the marker
-                    reader.toss(@sizeOf(MarkerT));
-                } else if (data_or_marker == MarkerT.scan_marker) {
+                    reader.toss(@sizeOf(Marker));
+                } else if (data_or_marker == Marker.scan_marker) {
                     // Found next scan marker: append last step to the table and break
                     try step_table.append(null, @intCast(data_offset), @intCast(data_size));
                     break;
                 } else {
                     // Advance by size of data
-                    reader.toss(@sizeOf(DataT));
+                    reader.toss(@sizeOf(Datum));
                     // Increment the data size
-                    data_size += @sizeOf(DataT);
+                    data_size += @sizeOf(Datum);
                 }
             } else |_| {
                 // EndOfStream or ReadFailed
@@ -423,7 +483,7 @@ const ScanTable = struct {
         } else |_| {}
     }
 
-    pub fn deinit(self: *@This()) void {
+    fn deinit(self: *@This()) void {
         for (self.scans.items) |*step_table| {
             step_table.deinit();
         }
@@ -435,7 +495,7 @@ const StepTable = struct {
     steps: std.ArrayList(StepEntry) = .empty,
     allocator: std.mem.Allocator,
 
-    pub fn append(
+    fn append(
         self: *@This(),
         step_val: ?[]const u8,
         data_offset: i64,
@@ -464,7 +524,7 @@ const StepTable = struct {
         }
     }
 
-    pub fn deinit(self: *@This()) void {
+    fn deinit(self: *@This()) void {
         for (self.steps.items) |*step| {
             if (step.value != null) self.allocator.free(step.value.?);
         }
@@ -554,7 +614,7 @@ const DecodedWord = struct {
         @"??",
     };
 
-    pub fn decode(word: u32) !DecodedWord {
+    fn decode(word: u32) !DecodedWord {
         // FL: type_len=2, type_val=2 (top 2 bits == 0b10)
         if ((word >> 30) == 2) {
             return .{
