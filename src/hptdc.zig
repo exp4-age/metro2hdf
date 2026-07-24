@@ -33,7 +33,7 @@ pub fn parseChannel(
 
     // HPTDC mode (HITS, GRPS)
     var buf: [5]u8 = undefined;
-    const mode = try std.fmt.bufPrintSentinel(&buf, "{s}", .{try reader.take(4)}, 0);
+    const mode = std.fmt.bufPrintSentinel(&buf, "{s}", .{try reader.take(4)}, 0) catch unreachable;
 
     // Where and how big is the scan table?
     const scan_table_offset = try reader.takeInt(i64, .little);
@@ -52,7 +52,7 @@ pub fn parseChannel(
     // Next should be 'DATA' in supported versions
     if (!std.mem.eql(u8, try reader.take(4), "DATA")) return error.UnsupportedVersion;
 
-    // Create and parse parameter table
+    // Create and parse parameter table, it is okay if it fails
     var attrs = try hdf5.AttrList.init(allocator);
     defer attrs.deinit();
     attrs.append("name", ch.name) catch {};
@@ -275,6 +275,8 @@ fn parseHits(
                     mask |= bit;
                 }
             }
+
+            if (data.items.len == 0) continue;
 
             // Write the dataset to the hdf5 file
             try h5f.writeSimpleDset(i64, data.items, 8, scan_idx, step_idx, step.value, ch.name, attrs);
