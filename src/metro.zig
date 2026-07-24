@@ -5,13 +5,6 @@ const tsv = @import("tsv.zig");
 const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
 
-pub const Options = struct {
-    hptdc_rebuild_tables: bool = false,
-    hptdc_event_type: u8 = 'P',
-    hptdc_hit_filter: u8 = (@as(u8, 1) << 7) - 1,
-    hptdc_hit_mcp: u3 = 6,
-};
-
 pub const RunTable = struct {
     map: std.AutoHashMap(u64, Run),
     sorting: std.ArrayList(u64),
@@ -278,24 +271,88 @@ const FileFormat = enum {
     }
 };
 
-fn isDate(str: []const u8) bool {
-    if (str.len != 8) return false;
-    for (str) |c| if (c < '0' or c > '9') return false;
-    const dd = (str[0] - '0') * 10 + (str[1] - '0');
-    const mm = (str[2] - '0') * 10 + (str[3] - '0');
-    return dd >= 1 and dd <= 31 and mm >= 1 and mm <= 12;
-}
+pub const Options = struct {
+    hptdc_rebuild_tables: bool = false,
+    hptdc_event_type: u8 = 'P',
+    hptdc_hit_filter: u8 = (@as(u8, 1) << 7) - 1,
+    hptdc_hit_mcp: u3 = 6,
+};
 
-fn isTime(str: []const u8) bool {
-    if (str.len != 6) return false;
-    for (str) |c| if (c < '0' or c > '9') return false;
-    const hh = (str[0] - '0') * 10 + (str[1] - '0');
-    const mm = (str[2] - '0') * 10 + (str[3] - '0');
-    const ss = (str[4] - '0') * 10 + (str[5] - '0');
-    return hh >= 0 and hh < 24 and mm >= 0 and mm < 60 and ss >= 0 and ss < 60;
-}
+pub const Summary = struct {
+    matching_run_files: usize = 0,
+    skipped_run_files: usize = 0,
+    new_files: usize = 0,
+    replaced_files: usize = 0,
+    skipped_files: usize = 0,
+    processed_channels: usize = 0,
+    skipped_channels: usize = 0,
+    input_size: u64 = 0,
+    output_size: u64 = 0,
+    timer: std.Io.Timestamp,
+    io: std.Io,
 
-pub fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
+    pub fn start_timer(io: std.Io) Summary {
+        const clock: std.Io.Clock = .real;
+        return .{ .timer = clock.now(io), .io = io };
+    }
+
+    pub fn write(
+        self: *@This(),
+        w: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try w.printAscii("μετρο2hdf summary\n", .{});
+        try w.printAscii("Processed files : ", .{});
+        try w.print("{d} matching ({d} skipped)\n", .{
+            self.matching_run_files,
+            self.skipped_run_files,
+        });
+
+        try w.printAscii("HDF5 output     : ", .{});
+        try w.print("{d} written ({d} new, {d} replaced, {d} skipped)\n", .{
+            self.new_files + self.replaced_files,
+            self.new_files,
+            self.replaced_files,
+            self.skipped_files,
+        });
+
+        try w.printAscii("Channels        : ", .{});
+        try w.print("{d} total ({d} skipped)\n", .{
+            self.processed_channels,
+            self.skipped_channels,
+        });
+
+        const clock: std.Io.Clock = .real;
+        const elapsed_time = self.timer.untilNow(self.io, clock);
+        const elapsed_time_in_s = @max(elapsed_time.toSeconds(), 1);
+
+        try w.printAscii("Read bytes      : ", .{});
+        try formatFilesize(w, self.input_size);
+        try w.printAscii(" total (", .{});
+        if (std.math.divCeil(u64, self.input_size, elapsed_time_in_s)) |read_speed| {
+            try formatFilesize(w, read_speed);
+        } else |_| {
+            try w.writeByte('?');
+        }
+        try w.printAscii("/s)\n", .{});
+
+        try w.printAscii("Write bytes     : ", .{});
+        try formatFilesize(w, self.output_size);
+        try w.printAscii(" total (", .{});
+        if (std.math.divCeil(u64, self.output_size, elapsed_time_in_s)) |write_speed| {
+            try formatFilesize(w, write_speed);
+        } else |_| {
+            try w.writeByte('?');
+        }
+        try w.printAscii("/s)\n", .{});
+
+        try w.printAscii("Elapsed time    : ", .{});
+        try elapsed_time.format(w);
+        try w.printAsciiChar('\n', .{});
+        try w.flush();
+    }
+};
+
+fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
     const bytes_remaining = bytes;
     inline for (.{
         .{ .bytes = 1000000000000, .sep = "T" },
@@ -324,4 +381,21 @@ pub fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
 
     try w.printInt(bytes_remaining, 10, .lower, .{});
     try w.writeAll("bytes");
+}
+
+fn isDate(str: []const u8) bool {
+    if (str.len != 8) return false;
+    for (str) |c| if (c < '0' or c > '9') return false;
+    const dd = (str[0] - '0') * 10 + (str[1] - '0');
+    const mm = (str[2] - '0') * 10 + (str[3] - '0');
+    return dd >= 1 and dd <= 31 and mm >= 1 and mm <= 12;
+}
+
+fn isTime(str: []const u8) bool {
+    if (str.len != 6) return false;
+    for (str) |c| if (c < '0' or c > '9') return false;
+    const hh = (str[0] - '0') * 10 + (str[1] - '0');
+    const mm = (str[2] - '0') * 10 + (str[3] - '0');
+    const ss = (str[4] - '0') * 10 + (str[5] - '0');
+    return hh >= 0 and hh < 24 and mm >= 0 and mm < 60 and ss >= 0 and ss < 60;
 }

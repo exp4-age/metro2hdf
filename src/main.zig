@@ -42,10 +42,6 @@ pub fn main(init: std.process.Init) !void {
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
     const stdout_writer = &stdout_file_writer.interface;
 
-    // Track the time
-    const clock: Io.Clock = .real;
-    const timer_start = clock.now(io);
-
     // Get the c allocator because we interface with hdf5
     const allocator = std.heap.c_allocator;
 
@@ -110,8 +106,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    var summary: metro.Summary = .start_timer(io);
     const parent_progress_node = std.Progress.start(io, .{ .root_name = "μετρο2hdf" });
-    defer parent_progress_node.end();
+    errdefer parent_progress_node.end();
 
     // Get current working directory for glob'ing
     const dir = try Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
@@ -152,15 +149,6 @@ pub fn main(init: std.process.Init) !void {
         };
     }
 
-    // Keep track of some statistics for the print summary
-    var processed_channels: usize = 0;
-    var skipped_channels: usize = 0;
-    var new_files: usize = 0;
-    var replaced_files: usize = 0;
-    var skipped_files: usize = 0;
-    var input_size: u64 = 0;
-    var output_size: u64 = 0;
-
     // Start processing of runs
     const progress_runs = parent_progress_node.start("runs", run_table.getLength());
     errdefer progress_runs.end();
@@ -179,23 +167,23 @@ pub fn main(init: std.process.Init) !void {
         if (out_dir.access(io, filename, .{ .read = true, .write = true })) {
             if (!replace) {
                 std.log.info("skipping '{s}': file already exists", .{filepath});
-                skipped_files += 1;
+                summary.skipped_files += 1;
                 continue;
             } else {
                 out_dir.deleteFile(io, filename) catch |err| {
                     std.log.warn("could not replace '{s}': {}", .{ filepath, err });
-                    skipped_files += 1;
+                    summary.skipped_files += 1;
                     continue;
                 };
-                replaced_files += 1;
+                summary.replaced_files += 1;
             }
         } else |err| switch (err) {
             error.FileNotFound => {
-                new_files += 1;
+                summary.new_files += 1;
             },
             else => {
                 std.log.warn("could not access '{s}': {}", .{ filepath, err });
-                skipped_files += 1;
+                summary.skipped_files += 1;
             },
         }
 
@@ -227,9 +215,9 @@ pub fn main(init: std.process.Init) !void {
             if (ch.parse(&file, &h5f, io, allocator, options)) {
                 // Add the size of the parsed file
                 if (file.stat(io)) |stat| {
-                    input_size += stat.size;
+                    summary.input_size += stat.size;
                 } else |_| {}
-                processed_channels += 1;
+                summary.processed_channels += 1;
             } else |err| switch (err) {
                 error.UnknownFormat => {
                     std.log.warn("unsupported format '{}' of channel '{s}' in run '{s}'", .{
@@ -237,66 +225,29 @@ pub fn main(init: std.process.Init) !void {
                         ch.name,
                         run.num,
                     });
-                    skipped_channels += 1;
+                    summary.skipped_channels += 1;
                 },
                 error.UnsupportedChannel => {
                     std.log.warn("unsupported channel '{s}' in run '{s}'", .{
                         ch.name,
                         run.num,
                     });
-                    skipped_channels += 1;
+                    summary.skipped_channels += 1;
                 },
                 else => {
-                    skipped_channels += 1;
+                    summary.skipped_channels += 1;
                 },
             }
         }
 
-        output_size += h5f.getSize() catch 0;
+        // Try to get the number of written bytes
+        summary.output_size += h5f.getSize() catch 0;
     }
 
     // End progress to clear stderr
     progress_runs.end();
+    parent_progress_node.end();
 
     // Print summary
-    try stdout_writer.printAscii("μετρο2hdf summary\n", .{});
-    try stdout_writer.printAscii("Processed files : ", .{});
-    try stdout_writer.print("{d} matching ({d} skipped)\n", .{
-        matching_run_files,
-        skipped_run_files,
-    });
-
-    try stdout_writer.printAscii("HDF5 output     : ", .{});
-    try stdout_writer.print("{d} written ({d} new, {d} replaced, {d} skipped)\n", .{
-        new_files + replaced_files,
-        new_files,
-        replaced_files,
-        skipped_files,
-    });
-
-    try stdout_writer.printAscii("Channels        : ", .{});
-    try stdout_writer.print("{d} total ({d} skipped)\n", .{
-        processed_channels,
-        skipped_channels,
-    });
-
-    const elapsed_time = timer_start.untilNow(io, clock);
-    const elapsed_time_in_s = @max(elapsed_time.toSeconds(), 1);
-
-    try stdout_writer.printAscii("Read bytes      : ", .{});
-    try metro.formatFilesize(stdout_writer, input_size);
-    try stdout_writer.printAscii(" total (", .{});
-    try metro.formatFilesize(stdout_writer, try std.math.divCeil(u64, input_size, elapsed_time_in_s));
-    try stdout_writer.printAscii("/s)\n", .{});
-
-    try stdout_writer.printAscii("Write bytes     : ", .{});
-    try metro.formatFilesize(stdout_writer, output_size);
-    try stdout_writer.printAscii(" total (", .{});
-    try metro.formatFilesize(stdout_writer, try std.math.divCeil(u64, output_size, elapsed_time_in_s));
-    try stdout_writer.printAscii("/s)\n", .{});
-
-    try stdout_writer.printAscii("Elapsed time    : ", .{});
-    try elapsed_time.format(stdout_writer);
-    try stdout_writer.printAsciiChar('\n', .{});
-    try stdout_writer.flush();
+    summary.write(stdout_writer) catch {};
 }
