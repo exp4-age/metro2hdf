@@ -100,6 +100,10 @@ fn sortEvents(
 ) !void {
     var reader = &file_reader.interface;
 
+    // HPTDC channel numbers (currently only one configuration supported)
+    const electron_channel: i8 = 1;
+    const photon_channel: i8 = 2;
+
     // Event type P or I for either EP or EI coincidences
     const p2 = options.hptdc_event_type;
 
@@ -126,9 +130,6 @@ fn sortEvents(
             // Skip if there is no data
             if (step.data_size < 4 or @mod(step.data_size, 4) != 0) continue;
 
-            // Get the number of words in this step
-            const n: usize = @intCast(@divExact(step.data_size, 4));
-
             // Counters for the electron and photon events per bunch
             var e_count: usize = 0;
             var p_count: usize = 0;
@@ -137,6 +138,8 @@ fn sortEvents(
             var e_buf: [max_count]i32 = undefined;
             var p_buf: [max_count]i32 = undefined;
 
+            // Decode the words and sort by event category
+            const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
             for (0..n) |_| {
                 const word = try DecodedWord.decode(try reader.takeInt(u32, .little));
                 switch (word.type) {
@@ -150,6 +153,7 @@ fn sortEvents(
                             continue;
                         }
 
+                        // Append row to the dataset of the event category
                         const ev = &events[e_count][p_count];
                         try ev.appendSlice(allocator, e_buf[0..e_count]);
                         try ev.appendSlice(allocator, p_buf[0..p_count]);
@@ -159,14 +163,13 @@ fn sortEvents(
                         p_count = 0;
                     },
                     .FL => {
+                        // Detected a particle: switch on which tdc channel
                         switch (word.arg1) {
-                            1 => {
-                                // Add electron to event
+                            electron_channel => {
                                 if (e_count < max_count) e_buf[e_count] = word.arg3;
                                 e_count += 1;
                             },
-                            2 => {
-                                // Add photon to event
+                            photon_channel => {
                                 if (p_count < max_count) p_buf[p_count] = word.arg3;
                                 p_count += 1;
                             },
@@ -243,7 +246,6 @@ fn parseHits(
             if (step.data_size < @sizeOf(Hit) or @mod(step.data_size, @sizeOf(Hit)) != 0) continue;
 
             const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
-
             for (0..n) |_| {
                 const hit = try reader.takeStruct(Hit, .little);
 
