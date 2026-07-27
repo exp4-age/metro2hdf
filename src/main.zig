@@ -122,10 +122,6 @@ pub fn main(init: std.process.Init) !void {
     var run_table = try metro.RunTable.init(allocator);
     defer run_table.deinit();
 
-    // Keep track of some statistics for the print summary
-    var matching_run_files: usize = 0;
-    var skipped_run_files: usize = 0;
-
     // Start glob'ing of files
     var walker = try Io.Dir.walk(dir, allocator);
     defer walker.deinit();
@@ -137,14 +133,14 @@ pub fn main(init: std.process.Init) !void {
         // Skip if the path does not match the glob pattern
         if (!glob.globMatch(pattern, entry.path)) continue;
 
-        matching_run_files += 1;
+        summary.matching_run_files += 1;
 
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path, exclude.items, include.items) catch |err| {
             if (err != error.ExcludedChannel) {
                 std.log.warn("could not parse file name '{s}': {}", .{ entry.path, err });
             }
-            skipped_run_files += 1;
+            summary.skipped_run_files += 1;
             continue;
         };
     }
