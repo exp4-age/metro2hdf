@@ -91,6 +91,8 @@ pub fn main(init: std.process.Init) !void {
             options.hptdc_event_type = 'P';
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EI")) {
             options.hptdc_event_type = 'I';
+        } else if (std.mem.eql(u8, arg, "--legacy-event-names")) {
+            options.legacy_event_names = true;
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-filter=")) {
             options.hptdc_hit_filter = try std.fmt.parseInt(u8, arg[19..], 2);
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-mcp=")) {

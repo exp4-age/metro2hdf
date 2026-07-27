@@ -219,12 +219,18 @@ fn sortEvents(
                     if (ev.items.len == 0) continue;
 
                     // Create name for the dataset
-                    var name_buf: [8]u8 = undefined;
+                    var name_buf: [18]u8 = undefined;
                     var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{ i, j, p2 });
-                    if (j == 0) {
-                        name = try std.fmt.bufPrint(&name_buf, "{d}E", .{i});
-                    } else if (i == 0) {
-                        name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{ j, p2 });
+                    if (options.legacy_event_names) {
+                        for (0..i) |buf_idx| name_buf[buf_idx] = 'E';
+                        for (i .. j + i) |buf_idx| name_buf[buf_idx] = p2;
+                        name = name_buf[0 .. i + j];
+                    } else {
+                        if (j == 0) {
+                            name = try std.fmt.bufPrint(&name_buf, "{d}E", .{i});
+                        } else if (i == 0) {
+                            name = try std.fmt.bufPrint(&name_buf, "{d}{c}", .{ j, p2 });
+                        }
                     }
 
                     // Set shape to 0 for a single particle

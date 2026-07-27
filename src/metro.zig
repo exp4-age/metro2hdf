@@ -274,6 +274,7 @@ const FileFormat = enum {
 pub const Options = struct {
     hptdc_rebuild_tables: bool = false,
     hptdc_event_type: u8 = 'P',
+    legacy_event_names: bool = false,
     hptdc_hit_filter: u8 = (@as(u8, 1) << 7) - 1,
     hptdc_hit_mcp: u3 = 6,
 };
