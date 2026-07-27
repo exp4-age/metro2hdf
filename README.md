@@ -47,6 +47,7 @@ HPTDC OPTIONS
 HPTDC OPTIONS (GRPS mode)
       --hptdc-event-type={EP,EI}  type of recorded particles
                                   (default: "EP")
+      --legacy-event-names        use old event names, e.g. EEEP
 
 HPTDC OPTIONS (HITS mode)
       --hptdc-hit-filter=FILTER   specify a filter for the tdc
