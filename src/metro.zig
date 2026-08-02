@@ -6,59 +6,53 @@ const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
 
 pub const RunTable = struct {
-    hm: std.AutoHashMap(u64, Run),
-    sorting: std.ArrayList(u64),
+    hm: std.StringArrayHashMapUnmanaged(Run) = .empty,
+    allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) !RunTable {
-        return .{
-            .hm = .init(allocator),
-            .sorting = .empty,
-        };
-    }
+    const SortContext = struct {
+        values: []const Run,
 
-    pub fn getLength(self: *@This()) usize {
-        return self.sorting.items.len;
-    }
-
-    pub const Iterator = struct {
-        rt: *const RunTable,
-        idx: usize = 0,
-
-        pub fn next(it: *Iterator) ?*Run {
-            if (it.idx >= it.rt.sorting.items.len) {
-                return null;
-            }
-            if (it.rt.hm.getPtr(it.rt.sorting.items[it.idx])) |ptr| {
-                it.idx += 1;
-                return ptr;
-            }
-            return null;
+        pub fn lessThan(ctx: SortContext, a_index: usize, b_index: usize) bool {
+            const a_num = std.fmt.parseInt(u64, ctx.values[a_index].num, 10) catch 0;
+            const b_num = std.fmt.parseInt(u64, ctx.values[b_index].num, 10) catch 0;
+            return a_num < b_num;
         }
     };
 
-    pub fn iterator(self: *@This()) Iterator {
-        return .{ .rt = self };
+    pub fn init(allocator: std.mem.Allocator) RunTable {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn count(self: *@This()) usize {
+        return self.hm.count();
+    }
+
+    pub fn sort(self: *@This()) void {
+        self.hm.sort(SortContext{ .values = self.hm.values() });
+    }
+
+    pub fn iterator(self: *@This()) std.StringArrayHashMapUnmanaged(Run).Iterator {
+        return self.hm.iterator();
     }
 
     pub fn addChannel(
         self: *@This(),
-        path: []const u8,
+        file_path: []const u8,
         exclude: [][:0]const u8,
         include: [][:0]const u8,
     ) !void {
+        const path = try self.allocator.dupe(u8, file_path);
+        errdefer self.allocator.free(path);
+
         const stem = std.fs.path.stem(path);
         const ext = std.fs.path.extension(path);
-
-        // Create a unique hash with the run information
-        var hash = std.hash.Wyhash.init(42);
 
         // Split the filename into segments for parsing
         var it = std.mem.splitScalar(u8, stem, '_');
 
         // The first segment is the run number
         const num = it.next() orelse return error.MalformedFileName;
-        const idx = try std.fmt.parseUnsigned(usize, num, 10);
-        hash.update(num);
+        // const idx = try std.fmt.parseUnsigned(usize, num, 10);
 
         // All following segments are the run name until the date is found
         var name = it.next() orelse return error.MalformedFileName;
@@ -73,21 +67,16 @@ pub const RunTable = struct {
             name = stem[name_start..seg_end];
         } else return error.MalformedFileName;
 
-        // Update the hash with name and date
-        hash.update(name);
-        hash.update(date);
-
         // After the date must come the time
         const time = it.next() orelse return error.MalformedFileName;
         if (!isTime(time)) return error.MalformedFileName;
-        hash.update(time);
 
         // Last is the name of the data channel
         const channel = it.rest();
 
         // Get null terminated string for glob matching
-        const channel0 = try self.hm.allocator.dupeSentinel(u8, channel, 0);
-        defer self.hm.allocator.free(channel0);
+        const channel0 = try self.allocator.dupeSentinel(u8, channel, 0);
+        defer self.allocator.free(channel0);
 
         // Skip if the channel is not in the include list (if not empty)
         if (include.len > 0) {
@@ -109,100 +98,48 @@ pub const RunTable = struct {
         // Found metro screenshot
         if (format == .jpg) return error.ExcludedChannel;
 
-        // Combination of num, name, date and time should uniquely identify a run
-        const run_hash = hash.final();
+        const string_hash = stem[0 .. stem.len - channel.len - 1];
 
         // Add run to hash map or get the existing one
-        const gop = try self.hm.getOrPut(run_hash);
+        const gop = try self.hm.getOrPut(self.allocator, string_hash);
 
         if (!gop.found_existing) {
-            errdefer self.hm.removeByPtr(gop.key_ptr);
-
             // Add new run to the hash map
-            gop.value_ptr.* = try .init(idx, num, name, date, time, self.hm.allocator);
-            errdefer gop.value_ptr.deinit();
-
-            var sorted_idx: usize = 0;
-            for (self.sorting.items) |h| {
-                if (self.hm.get(h)) |item| {
-                    if (idx > item.idx) {
-                        sorted_idx += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            try self.sorting.insert(self.hm.allocator, sorted_idx, run_hash);
-            errdefer _ = self.sorting.orderedRemove(sorted_idx);
+            gop.value_ptr.* = .{ .num = num, .name = name, .date = date, .time = time };
         }
 
         // Append the channel to the run
-        try gop.value_ptr.addChannel(path, channel, format);
+        try gop.value_ptr.addChannel(self.allocator, .{ .path = path, .name = channel, .format = format });
     }
 
     pub fn deinit(self: *@This()) void {
-        var it = self.hm.iterator();
-        while (it.next()) |*entry| {
-            entry.value_ptr.deinit();
+        for (self.hm.values()) |*run| {
+            for (run.channels.items) |ch| {
+                self.allocator.free(ch.path);
+            }
+            run.deinit(self.allocator);
         }
-        self.sorting.deinit(self.hm.allocator);
-        self.hm.deinit();
+        self.hm.deinit(self.allocator);
     }
 };
 
 pub const Run = struct {
-    idx: usize,
     num: []const u8,
     name: []const u8,
     date: []const u8,
     time: []const u8,
-    channels: std.ArrayList(Channel),
-    allocator: std.mem.Allocator,
-
-    pub fn init(
-        idx: usize,
-        num: []const u8,
-        name: []const u8,
-        date: []const u8,
-        time: []const u8,
-        allocator: std.mem.Allocator,
-    ) !Run {
-        const num0 = try allocator.dupe(u8, num);
-        errdefer allocator.free(num0);
-        const name0 = try allocator.dupe(u8, name);
-        errdefer allocator.free(name0);
-        const date0 = try allocator.dupe(u8, date);
-        errdefer allocator.free(date0);
-        const time0 = try allocator.dupe(u8, time);
-        errdefer allocator.free(time0);
-        return .{
-            .idx = idx,
-            .num = num0,
-            .name = name0,
-            .date = date0,
-            .time = time0,
-            .channels = .empty,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn format(self: Run, writer: *std.Io.Writer) !void {
-        try writer.print("{s}_{s}_{s}_{s}.h5", .{ self.num, self.name, self.date, self.time });
-    }
+    channels: std.ArrayList(Channel) = .empty,
 
     pub fn addChannel(
         self: *@This(),
-        path: []const u8,
-        name: []const u8,
-        ext: FileFormat,
+        allocator: std.mem.Allocator,
+        channel: Channel,
     ) !void {
-        var ch: Channel = try .init(path, name, ext, self.allocator);
-        errdefer ch.deinit();
-        try self.channels.append(self.allocator, ch);
+        try self.channels.append(allocator, channel);
     }
 
-    pub fn writeAttrs(self: *@This(), h5f: *hdf5.File) !void {
-        var h5a = try hdf5.AttrList.init(self.allocator);
+    pub fn writeAttrs(self: *@This(), h5f: *hdf5.File, allocator: std.mem.Allocator) !void {
+        var h5a = try hdf5.AttrList.init(allocator);
         defer h5a.deinit();
 
         // Measurement run number
@@ -228,20 +165,8 @@ pub const Run = struct {
         try h5a.write(root.id);
     }
 
-    pub fn deinit(self: *@This()) void {
-        // Free strings
-        self.allocator.free(self.num);
-        self.allocator.free(self.name);
-        self.allocator.free(self.date);
-        self.allocator.free(self.time);
-
-        // Deinit channels
-        for (self.channels.items) |*ch| {
-            ch.deinit();
-        }
-
-        // Deinit the array list
-        self.channels.deinit(self.allocator);
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.channels.deinit(allocator);
     }
 };
 
@@ -249,20 +174,6 @@ pub const Channel = struct {
     path: []const u8,
     name: []const u8,
     format: FileFormat,
-    allocator: std.mem.Allocator,
-
-    pub fn init(
-        path: []const u8,
-        name: []const u8,
-        format: FileFormat,
-        allocator: std.mem.Allocator,
-    ) !Channel {
-        const path0 = try allocator.dupe(u8, path);
-        errdefer allocator.free(path0);
-        const name0 = try allocator.dupe(u8, name);
-        errdefer allocator.free(name0);
-        return .{ .path = path0, .name = name0, .format = format, .allocator = allocator };
-    }
 
     pub fn parse(
         self: @This(),
@@ -284,11 +195,6 @@ pub const Channel = struct {
                 return error.UnknownFormat;
             },
         }
-    }
-
-    pub fn deinit(self: *@This()) void {
-        self.allocator.free(self.path);
-        self.allocator.free(self.name);
     }
 };
 

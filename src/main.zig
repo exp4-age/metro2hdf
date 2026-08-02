@@ -122,7 +122,7 @@ pub fn main(init: std.process.Init) !void {
     defer out_dir.close(io);
 
     // Build a table of runs and channel files
-    var run_table = try metro.RunTable.init(allocator);
+    var run_table: metro.RunTable = .init(allocator);
     defer run_table.deinit();
 
     var walker = try Io.Dir.walk(dir, allocator);
@@ -153,14 +153,19 @@ pub fn main(init: std.process.Init) !void {
         };
     }
 
+    // Sort the run table by num
+    run_table.sort();
+
     // Start processing of runs
-    const progress_runs = parent_progress_node.start("runs", run_table.getLength());
+    const progress_runs = parent_progress_node.start("runs", run_table.count());
     errdefer progress_runs.end();
 
     var run_it = run_table.iterator();
 
-    while (run_it.next()) |run| {
-        const filename = try std.fmt.allocPrintSentinel(allocator, "{f}", .{ run }, 0);
+    while (run_it.next()) |entry| {
+        var run = entry.value_ptr;
+
+        const filename = try std.fmt.allocPrintSentinel(allocator, "{s}.h5", .{ entry.key_ptr.* }, 0);
         defer allocator.free(filename);
         const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{ output_dir, filename });
         defer allocator.free(filepath);
@@ -202,7 +207,7 @@ pub fn main(init: std.process.Init) !void {
         defer h5f.close();
 
         // Write run attributes
-        run.writeAttrs(&h5f) catch |err| {
+        run.writeAttrs(&h5f, allocator) catch |err| {
             std.log.warn("could not write attributes for run {s}: {}", .{ run.num, err });
         };
 
