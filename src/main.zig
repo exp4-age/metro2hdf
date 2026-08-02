@@ -113,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
     const parent_progress_node = std.Progress.start(io, .{ .root_name = "μετρο2hdf" });
     errdefer parent_progress_node.end();
 
-    // Get current working directory for glob'ing
+    // Get current working directory for glob'ing input files
     const dir = try Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
     defer dir.close(io);
 
@@ -121,15 +121,20 @@ pub fn main(init: std.process.Init) !void {
     const out_dir = try dir.openDir(io, output_dir, .{});
     defer out_dir.close(io);
 
-    // Keep track of already touched files
+    // Build a table of runs and channel files
     var run_table = try metro.RunTable.init(allocator);
     defer run_table.deinit();
 
-    // Start glob'ing of files
     var walker = try Io.Dir.walk(dir, allocator);
     defer walker.deinit();
 
-    while (try walker.next(io)) |entry| {
+    while (true) {
+        const next = walker.next(io) catch |err| {
+            std.log.warn("skipping directory entry: {}", .{ err });
+            continue;
+        };
+        const entry = next orelse break;
+
         // Skip non files
         if (entry.kind != .file) continue;
 
@@ -155,8 +160,7 @@ pub fn main(init: std.process.Init) !void {
     var run_it = run_table.iterator();
 
     while (run_it.next()) |run| {
-        // Construct name and path for the hdf5 file
-        const filename = try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
+        const filename = try std.fmt.allocPrintSentinel(allocator, "{f}", .{ run }, 0);
         defer allocator.free(filename);
         const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{ output_dir, filename });
         defer allocator.free(filepath);
@@ -198,7 +202,9 @@ pub fn main(init: std.process.Init) !void {
         defer h5f.close();
 
         // Write run attributes
-        run.writeAttrs(&h5f) catch {};
+        run.writeAttrs(&h5f) catch |err| {
+            std.log.warn("could not write attributes for run {s}: {}", .{ run.num, err });
+        };
 
         // Iterate over all channels
         const progress_channels = progress_runs.start("channels", run.channels.items.len);
@@ -236,6 +242,11 @@ pub fn main(init: std.process.Init) !void {
                     summary.skipped_channels += 1;
                 },
                 else => {
+                    std.log.warn("failed to parse channel '{s}' in run '{s}': {}", .{
+                        ch.name,
+                        run.num,
+                        err,
+                    });
                     summary.skipped_channels += 1;
                 },
             }
@@ -250,5 +261,7 @@ pub fn main(init: std.process.Init) !void {
     parent_progress_node.end();
 
     // Print summary
-    summary.write(stdout_writer) catch {};
+    summary.write(stdout_writer) catch |err| {
+        std.log.warn("could not write stdout summary: {}", .{ err });
+    };
 }

@@ -186,13 +186,17 @@ pub const Run = struct {
         };
     }
 
+    pub fn format(self: Run, writer: *std.Io.Writer) !void {
+        try writer.print("{s}_{s}_{s}_{s}.h5", .{ self.num, self.name, self.date, self.time });
+    }
+
     pub fn addChannel(
         self: *@This(),
         path: []const u8,
         name: []const u8,
-        format: FileFormat,
+        ext: FileFormat,
     ) !void {
-        var ch: Channel = try .init(path, name, format, self.allocator);
+        var ch: Channel = try .init(path, name, ext, self.allocator);
         errdefer ch.deinit();
         try self.channels.append(self.allocator, ch);
     }
@@ -207,7 +211,7 @@ pub const Run = struct {
         // Measurement name
         try h5a.append("name", self.name);
 
-        var buf: [8]u8 = undefined;
+        var buf: [10]u8 = undefined;
 
         // Format and append the date
         const date = try std.fmt.bufPrint(&buf, "{s}-{s}-{s}", .{ self.date[0..2], self.date[2..4], self.date[4..8] });
