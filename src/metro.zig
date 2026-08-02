@@ -6,19 +6,38 @@ const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
 
 pub const RunTable = struct {
-    map: std.AutoHashMap(u64, Run),
+    hm: std.AutoHashMap(u64, Run),
     sorting: std.ArrayList(u64),
-    idx: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) !RunTable {
         return .{
-            .map = .init(allocator),
+            .hm = .init(allocator),
             .sorting = .empty,
         };
     }
 
     pub fn getLength(self: *@This()) usize {
         return self.sorting.items.len;
+    }
+
+    pub const Iterator = struct {
+        rt: *const RunTable,
+        idx: usize = 0,
+
+        pub fn next(it: *Iterator) ?*Run {
+            if (it.idx >= it.rt.sorting.items.len) {
+                return null;
+            }
+            if (it.rt.hm.getPtr(it.rt.sorting.items[it.idx])) |ptr| {
+                it.idx += 1;
+                return ptr;
+            }
+            return null;
+        }
+    };
+
+    pub fn iterator(self: *@This()) Iterator {
+        return .{ .rt = self };
     }
 
     pub fn addChannel(
@@ -67,8 +86,8 @@ pub const RunTable = struct {
         const channel = it.rest();
 
         // Get null terminated string for glob matching
-        const channel0 = try self.map.allocator.dupeSentinel(u8, channel, 0);
-        defer self.map.allocator.free(channel0);
+        const channel0 = try self.hm.allocator.dupeSentinel(u8, channel, 0);
+        defer self.hm.allocator.free(channel0);
 
         // Skip if the channel is not in the include list (if not empty)
         if (include.len > 0) {
@@ -94,18 +113,18 @@ pub const RunTable = struct {
         const run_hash = hash.final();
 
         // Add run to hash map or get the existing one
-        const gop = try self.map.getOrPut(run_hash);
+        const gop = try self.hm.getOrPut(run_hash);
 
         if (!gop.found_existing) {
-            errdefer self.map.removeByPtr(gop.key_ptr);
+            errdefer self.hm.removeByPtr(gop.key_ptr);
 
             // Add new run to the hash map
-            gop.value_ptr.* = try .init(idx, num, name, date, time, self.map.allocator);
+            gop.value_ptr.* = try .init(idx, num, name, date, time, self.hm.allocator);
             errdefer gop.value_ptr.deinit();
 
             var sorted_idx: usize = 0;
             for (self.sorting.items) |h| {
-                if (self.map.get(h)) |item| {
+                if (self.hm.get(h)) |item| {
                     if (idx > item.idx) {
                         sorted_idx += 1;
                     } else {
@@ -113,7 +132,7 @@ pub const RunTable = struct {
                     }
                 }
             }
-            try self.sorting.insert(self.map.allocator, sorted_idx, run_hash);
+            try self.sorting.insert(self.hm.allocator, sorted_idx, run_hash);
             errdefer _ = self.sorting.orderedRemove(sorted_idx);
         }
 
@@ -121,26 +140,13 @@ pub const RunTable = struct {
         try gop.value_ptr.addChannel(path, channel, format);
     }
 
-    pub fn next(self: *@This()) ?Run {
-        if (self.idx >= self.sorting.items.len) {
-            self.idx = 0;
-            return null;
-        }
-        const run = self.map.get(self.sorting.items[self.idx]);
-        self.idx += 1;
-        if (run == null) {
-            return null;
-        }
-        return run.?;
-    }
-
     pub fn deinit(self: *@This()) void {
-        var it = self.map.iterator();
+        var it = self.hm.iterator();
         while (it.next()) |*entry| {
             entry.value_ptr.deinit();
         }
-        self.sorting.deinit(self.map.allocator);
-        self.map.deinit();
+        self.sorting.deinit(self.hm.allocator);
+        self.hm.deinit();
     }
 };
 
@@ -189,6 +195,33 @@ pub const Run = struct {
         var ch: Channel = try .init(path, name, format, self.allocator);
         errdefer ch.deinit();
         try self.channels.append(self.allocator, ch);
+    }
+
+    pub fn writeAttrs(self: *@This(), h5f: *hdf5.File) !void {
+        var h5a = try hdf5.AttrList.init(self.allocator);
+        defer h5a.deinit();
+
+        // Measurement run number
+        try h5a.append("number", self.num);
+
+        // Measurement name
+        try h5a.append("name", self.name);
+
+        var buf: [8]u8 = undefined;
+
+        // Format and append the date
+        const date = try std.fmt.bufPrint(&buf, "{s}-{s}-{s}", .{ self.date[0..2], self.date[2..4], self.date[4..8] });
+        try h5a.append("date", date);
+
+        // Format and append the time
+        const time = try std.fmt.bufPrint(&buf, "{s}:{s}:{s}", .{ self.time[0..2], self.time[2..4], self.time[4..6] });
+        try h5a.append("time", time);
+
+        // Write the attributes to the root group
+        var root = try h5f.openRoot();
+        defer root.close();
+
+        try h5a.write(root.id);
     }
 
     pub fn deinit(self: *@This()) void {

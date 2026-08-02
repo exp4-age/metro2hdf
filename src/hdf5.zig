@@ -25,6 +25,11 @@ pub const File = struct {
         return .{ .id = id, .lcpl = lcpl };
     }
 
+    pub fn openRoot(self: *@This()) !Group {
+        if (self.id < 0) return error.FileNotOpen;
+        return try .open(self.id, "/");
+    }
+
     pub fn getSize(self: *@This()) !u64 {
         if (self.id < 0) return error.H5I_INVALID_HID;
         var size: hdf5.hsize_t = 0;
@@ -32,101 +37,7 @@ pub const File = struct {
         return size;
     }
 
-    pub fn close(self: *@This()) void {
-        if (self.id >= 0) {
-            if (hdf5.H5Fclose(self.id) >= 0) self.id = -1;
-        }
-        if (self.lcpl >= 0) {
-            if (hdf5.H5Pclose(self.lcpl) >= 0) self.lcpl = -1;
-        }
-    }
-
-    pub fn writeSimpleDset(
-        self: *@This(),
-        comptime T: type,
-        data: []const T,
-        shape: usize,
-        scan_idx: usize,
-        step_idx: usize,
-        step_val: ?[]const u8,
-        channel: []const u8,
-        attrs: *AttrList,
-    ) !void {
-        // Fail if the file is not open
-        if (self.id < 0) return error.FileNotOpen;
-
-        // Create dataset properties
-        const dcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_DATASET_CREATE());
-        if (dcpl < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Pclose(dcpl);
-
-        // Create a dataspace
-        var fspace: hdf5.hid_t = undefined;
-        if (shape == 0) {
-            fspace = hdf5.H5Screate_simple(1, &[1]hdf5.hsize_t{@intCast(data.len)}, null);
-        } else {
-            if (data.len % shape != 0) return error.InvalidShape;
-            const rows = @divExact(data.len, shape);
-            fspace = hdf5.H5Screate_simple(2, &[2]hdf5.hsize_t{ @intCast(rows), @intCast(shape) }, null);
-
-            // Make 2d data column major by writing it in chunks
-            const chunk = [2]hdf5.hsize_t{ rows, 1 };
-            if (hdf5.H5Pset_chunk(dcpl, 2, &chunk) < 0) return error.H5I_INVALID_HID;
-        }
-        if (fspace < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Sclose(fspace);
-
-        // Define the datatype
-        const type_id = getH5T(T);
-
-        // Format path to dataset
-        var buf: [1024]u8 = undefined;
-        const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, channel }, 0);
-
-        // Create the dataset
-        const dset = try self.createDset(name, type_id, fspace, self.lcpl, dcpl);
-        defer _ = hdf5.H5Dclose(dset);
-
-        // Write attributes but don't error if it fails
-        attrs.write(dset) catch {};
-
-        // Write the dataset
-        try File.writeDset(T, data, dset, type_id);
-
-        // Create a link for accessing the dataset using the step value
-        if (step_val != null) self.createLink(scan_idx, step_idx, step_val.?) catch {};
-    }
-
-    fn createDset(
-        self: *@This(),
-        name: [:0]const u8,
-        type_id: hdf5.hid_t,
-        space: hdf5.hid_t,
-        lcpl: hdf5.hid_t,
-        dcpl: hdf5.hid_t,
-    ) !hdf5.hid_t {
-        // Default dataset access property list
-        const dapl = hdf5.H5P_DEFAULT;
-        // Create the dataset
-        const dset = hdf5.H5Dcreate2(self.id, name, type_id, space, lcpl, dcpl, dapl);
-        if (dset < 0) return error.H5I_INVALID_HID;
-        return dset;
-    }
-
-    fn writeDset(comptime T: type, data: []const T, dset: hdf5.hid_t, type_id: hdf5.hid_t) !void {
-        // Use file dataspace for the memory dataspace
-        const mem_space = hdf5.H5S_ALL;
-        // Selection in dataspace is set to "all"
-        const file_space = hdf5.H5S_ALL;
-        // Default transfer properties
-        const dxpl = hdf5.H5P_DEFAULT;
-        // Write the data
-        if (hdf5.H5Dwrite(dset, type_id, mem_space, file_space, dxpl, data.ptr) < 0) {
-            return error.H5DwriteFailed;
-        }
-    }
-
-    fn createLink(self: *@This(), scan_idx: usize, step_idx: usize, step_val: []const u8) !void {
+    pub fn createLink(self: *@This(), scan_idx: usize, step_idx: usize, step_val: []const u8) !void {
         // Format target path for the link
         var target_buf: [1024]u8 = undefined;
         const target = try std.fmt.bufPrintSentinel(&target_buf, "{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
@@ -142,35 +53,117 @@ pub const File = struct {
         if (hdf5.H5Lcreate_hard(self.id, target.ptr, self.id, link.ptr, self.lcpl, hdf5.H5P_DEFAULT) < 0) return error.H5LcreateFailed;
     }
 
-    pub fn writeRootAttrs(self: *@This(), run: metro.Run, allocator: std.mem.Allocator) !void {
-        // Open the root group
-        const root = hdf5.H5Gopen2(self.id, "/", hdf5.H5P_DEFAULT);
-        if (root < 0) return error.H5I_INVALID_HID;
-        defer _ = hdf5.H5Gclose(root);
-
-        var attrs = try AttrList.init(allocator);
-        defer attrs.deinit();
-
-        // Measurement run number
-        try attrs.append("number", run.num);
-
-        // Measurement name
-        try attrs.append("name", run.name);
-
-        var buf: [8]u8 = undefined;
-
-        // Format and append the date
-        const date = try std.fmt.bufPrint(&buf, "{s}-{s}-{s}", .{ run.date[0..2], run.date[2..4], run.date[4..8] });
-        try attrs.append("date", date);
-
-        // Format and append the time
-        const time = try std.fmt.bufPrint(&buf, "{s}:{s}:{s}", .{ run.time[0..2], run.time[2..4], run.time[4..6] });
-        try attrs.append("time", time);
-
-        // Write the attributes to the root group
-        try attrs.write(root);
+    pub fn close(self: *@This()) void {
+        if (self.id >= 0) {
+            if (hdf5.H5Fclose(self.id) >= 0) self.id = -1;
+        }
+        if (self.lcpl >= 0) {
+            if (hdf5.H5Pclose(self.lcpl) >= 0) self.lcpl = -1;
+        }
     }
 };
+
+pub const Group = struct {
+    id: hdf5.hid_t,
+
+    pub fn open(file_id: hdf5.hid_t, path: [:0]const u8) !Group {
+        const id = hdf5.H5Gopen2(file_id, path, hdf5.H5P_DEFAULT);
+        if (id < 0) return error.H5I_INVALID_HID;
+        return .{ .id = id };
+    }
+
+    pub fn close(self: *@This()) void {
+        if (self.id < 0) return;
+        if (hdf5.H5Gclose(self.id) >= 0) self.id = -1;
+    }
+};
+
+pub fn SimpleDset(comptime T: type) type {
+    return struct {
+        shape: usize,
+        name: []const u8,
+
+        const Self = @This();
+
+        fn create(
+            file_id: hdf5.hid_t,
+            name: [:0]const u8,
+            space: hdf5.hid_t,
+            lcpl: hdf5.hid_t,
+            dcpl: hdf5.hid_t,
+        ) !hdf5.hid_t {
+            // Get the H5 data type
+            const type_id = getH5T(T);
+            // Default dataset access property list
+            const dapl = hdf5.H5P_DEFAULT;
+            // Create the dataset
+            const dset = hdf5.H5Dcreate2(file_id, name, type_id, space, lcpl, dcpl, dapl);
+            if (dset < 0) return error.H5I_INVALID_HID;
+            return dset;
+        }
+
+        pub fn write(
+            self: *@This(),
+            file: *File,
+            data: []const T,
+            scan_idx: usize,
+            step_idx: usize,
+            step_val: ?[]const u8,
+            attrs: *AttrList,
+        ) !void {
+            // Fail if the file is not open
+            if (file.id < 0) return error.FileNotOpen;
+
+            // Create dataset properties
+            const dcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_DATASET_CREATE());
+            if (dcpl < 0) return error.H5I_INVALID_HID;
+            defer _ = hdf5.H5Pclose(dcpl);
+
+            // Create a dataspace
+            var fspace: hdf5.hid_t = undefined;
+            if (self.shape == 0) {
+                fspace = hdf5.H5Screate_simple(1, &[1]hdf5.hsize_t{@intCast(data.len)}, null);
+            } else {
+                if (data.len % self.shape != 0) return error.InvalidShape;
+                const rows = @divExact(data.len, self.shape);
+                fspace = hdf5.H5Screate_simple(2, &[2]hdf5.hsize_t{ @intCast(rows), @intCast(self.shape) }, null);
+
+                // Make 2d data column major by writing it in chunks
+                const chunk = [2]hdf5.hsize_t{ rows, 1 };
+                if (hdf5.H5Pset_chunk(dcpl, 2, &chunk) < 0) return error.H5I_INVALID_HID;
+            }
+            if (fspace < 0) return error.H5I_INVALID_HID;
+            defer _ = hdf5.H5Sclose(fspace);
+
+            // Format path to dataset
+            var buf: [1024]u8 = undefined;
+            const name = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, self.name }, 0);
+
+            // Create the dataset
+            const dset = try create(file.id, name, fspace, file.lcpl, dcpl);
+            defer _ = hdf5.H5Dclose(dset);
+
+            // Write attributes but don't error if it fails
+            attrs.write(dset) catch {};
+
+            // Write the dataset
+            // Get the H5 data type
+            const type_id = getH5T(T);
+            // Use file dataspace for the memory dataspace
+            const mem_space = hdf5.H5S_ALL;
+            // Selection in dataspace is set to "all"
+            const file_space = hdf5.H5S_ALL;
+            // Default transfer properties
+            const dxpl = hdf5.H5P_DEFAULT;
+            if (hdf5.H5Dwrite(dset, type_id, mem_space, file_space, dxpl, data.ptr) < 0) {
+                return error.H5DwriteFailed;
+            }
+
+            // Create a link for accessing the dataset using the step value
+            if (step_val != null) file.createLink(scan_idx, step_idx, step_val.?) catch {};
+        }
+    };
+}
 
 pub const AttrList = struct {
     attrs: std.ArrayList(Attr),
@@ -268,6 +261,6 @@ fn getH5T(comptime T: type) hdf5.hid_t {
             _ = hdf5.H5Tset_cset(type_id, hdf5.H5T_CSET_UTF8);
             break :blk type_id;
         },
-        else => @compileError("No known H5T for: " ++ @typeName(T)),
+        else => @compileError("No defined H5T for: " ++ @typeName(T)),
     };
 }

@@ -152,7 +152,9 @@ pub fn main(init: std.process.Init) !void {
     const progress_runs = parent_progress_node.start("runs", run_table.getLength());
     errdefer progress_runs.end();
 
-    while (run_table.next()) |run| {
+    var run_it = run_table.iterator();
+
+    while (run_it.next()) |run| {
         // Construct name and path for the hdf5 file
         const filename = try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
         defer allocator.free(filename);
@@ -196,7 +198,7 @@ pub fn main(init: std.process.Init) !void {
         defer h5f.close();
 
         // Write run attributes
-        h5f.writeRootAttrs(run, allocator) catch {};
+        run.writeAttrs(&h5f) catch {};
 
         // Iterate over all channels
         const progress_channels = progress_runs.start("channels", run.channels.items.len);

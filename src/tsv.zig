@@ -27,26 +27,26 @@ pub fn parseChannel(
     }
 
     // Create an attribute list
-    var attrs = try hdf5.AttrList.init(allocator);
-    defer attrs.deinit();
+    var h5a = try hdf5.AttrList.init(allocator);
+    defer h5a.deinit();
 
     // Get the channel name
     const name_marker = try reader.takeDelimiter('\n');
     if (name_marker == null) return error.MissingAttribute;
     if (!std.mem.startsWith(u8, name_marker.?, "# Name: ")) return error.MissingAttribute;
     if (!std.mem.eql(u8, name_marker.?[8..], ch.name)) return error.ChannelMismatch;
-    try attrs.append("name", name_marker.?[8..]);
+    try h5a.append("name", name_marker.?[8..]);
 
     // Get the hint
     const hint_marker = try reader.takeDelimiter('\n');
     if (hint_marker == null) return error.MissingAttribute;
     if (!std.mem.startsWith(u8, hint_marker.?, "# Hint: ")) return error.MissingAttribute;
-    try attrs.append("hint", hint_marker.?[8..]);
+    try h5a.append("hint", hint_marker.?[8..]);
 
     // Get the frequency
     const freq_marker = try reader.takeDelimiter('\n');
     if (!std.mem.startsWith(u8, freq_marker.?, "# Frequency: ")) return error.MissingAttribute;
-    try attrs.append("freq", freq_marker.?[13..]);
+    try h5a.append("freq", freq_marker.?[13..]);
     const freq = Frequency.fromString(freq_marker.?[13..]);
 
     // Get the shape
@@ -57,19 +57,21 @@ pub fn parseChannel(
     // Parse additional attributes if present
     while (reader.peekDelimiterExclusive('\n')) |line| {
         if (std.mem.find(u8, line, ":")) |idx| {
-            try attrs.append(line[2..idx], line[idx + 2 ..]);
+            try h5a.append(line[2..idx], line[idx + 2 ..]);
             reader.toss(line.len + 1);
         } else break;
     } else |err| {
         return err;
     }
 
+    var h5d: hdf5.SimpleDset(f64) = .{ .name = ch.name, .shape = shape };
+
     switch (freq) {
         .continuous => {
-            try parseContinuous(reader, h5f, ch, shape, &attrs, allocator);
+            try parseContinuous(reader, h5f, &h5d, &h5a, allocator);
         },
         .step => {
-            try parseStep(reader, h5f, ch, shape, &attrs, allocator);
+            try parseStep(reader, h5f, &h5d, &h5a, allocator);
         },
         .unknown => {
             return error.UnsupportedChannel;
@@ -80,12 +82,11 @@ pub fn parseChannel(
 fn parseStep(
     reader: *std.Io.Reader,
     h5f: *hdf5.File,
-    ch: metro.Channel,
-    shape: usize,
-    attrs: *hdf5.AttrList,
+    h5d: *hdf5.SimpleDset(f64),
+    h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
 ) !void {
-    const ncols: usize = if (shape == 0) 1 else shape;
+    const ncols: usize = if (h5d.shape == 0) 1 else h5d.shape;
 
     // Channles with "step" frequency don't have step markers
     // Keep track of scan index and step index
@@ -111,16 +112,7 @@ fn parseStep(
 
             // Check if the line matched the expected shape and write the data
             if (n == ncols) {
-                try h5f.writeSimpleDset(
-                    f64,
-                    data,
-                    shape,
-                    scan_idx.?,
-                    step_idx,
-                    null,
-                    ch.name,
-                    attrs,
-                );
+                try h5d.write(h5f, data, scan_idx.?, step_idx, null, h5a);
                 step_idx += 1;
             }
         }
@@ -137,12 +129,11 @@ fn parseStep(
 fn parseContinuous(
     reader: *std.Io.Reader,
     h5f: *hdf5.File,
-    ch: metro.Channel,
-    shape: usize,
-    attrs: *hdf5.AttrList,
+    h5d: *hdf5.SimpleDset(f64),
+    h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
 ) !void {
-    const col_num: usize = if (shape == 0) 1 else shape;
+    const col_num: usize = if (h5d.shape == 0) 1 else h5d.shape;
 
     var scan_idx: ?usize = null;
     var step_idx: ?usize = null;
@@ -188,16 +179,7 @@ fn parseContinuous(
             // Write dataset to hdf5 before continuing with next step
             if (scan_idx != null and step_idx != null) {
                 if (data.items.len > 0) {
-                    try h5f.writeSimpleDset(
-                        f64,
-                        data.items,
-                        shape,
-                        scan_idx.?,
-                        step_idx.?,
-                        step_val,
-                        ch.name,
-                        attrs,
-                    );
+                    try h5d.write(h5f, data.items, scan_idx.?, step_idx.?, step_val, h5a);
                     data.clearRetainingCapacity();
                 } else {
                     empty_step = true;
@@ -224,16 +206,7 @@ fn parseContinuous(
             // Write dataset to hdf5 before continuing with next scan
             if (scan_idx != null and step_idx != null) {
                 if (data.items.len > 0) {
-                    try h5f.writeSimpleDset(
-                        f64,
-                        data.items,
-                        shape,
-                        scan_idx.?,
-                        step_idx.?,
-                        step_val,
-                        ch.name,
-                        attrs,
-                    );
+                    try h5d.write(h5f, data.items, scan_idx.?, step_idx.?, step_val, h5a);
                     data.clearRetainingCapacity();
                 } else {
                     empty_step = true;
@@ -250,16 +223,7 @@ fn parseContinuous(
     // Write last dataset to hdf5
     if (scan_idx != null and step_idx != null) {
         if (data.items.len > 0) {
-            try h5f.writeSimpleDset(
-                f64,
-                data.items,
-                shape,
-                scan_idx.?,
-                step_idx.?,
-                step_val,
-                ch.name,
-                attrs,
-            );
+            try h5d.write(h5f, data.items, scan_idx.?, step_idx.?, step_val, h5a);
         } else {
             empty_step = true;
         }

@@ -75,13 +75,13 @@ pub fn parseChannel(
     }
 
     // Create and parse parameter table, it is okay if it fails
-    var attrs: hdf5.AttrList = try .init(allocator);
-    defer attrs.deinit();
-    attrs.append("name", ch.name) catch {};
-    attrs.append("mode", @tagName(mode)) catch {};
+    var h5a: hdf5.AttrList = try .init(allocator);
+    defer h5a.deinit();
+    h5a.append("name", ch.name) catch {};
+    h5a.append("mode", @tagName(mode)) catch {};
 
     if (param_table_size > 0 and param_table_offset > header_size) {
-        appendParamTable(&attrs, &file_reader, param_table_offset, param_table_size) catch {};
+        appendParamTable(&h5a, &file_reader, param_table_offset, param_table_size) catch {};
     }
 
     var scan_table: ScanTable = .{ .allocator = allocator };
@@ -101,7 +101,7 @@ pub fn parseChannel(
             );
 
             // Parse the hits and group them into events
-            try parseHits(ch, &file_reader, h5f, &scan_table, &attrs, allocator, options);
+            try parseHits(ch, &file_reader, h5f, &scan_table, &h5a, allocator, options);
         },
         .GRPS => {
             // Parse or rebuild the scan table
@@ -116,7 +116,7 @@ pub fn parseChannel(
             );
 
             // Parse and decode the words and sort them into events
-            try sortEvents(&file_reader, h5f, &scan_table, &attrs, allocator, options);
+            try sortEvents(&file_reader, h5f, &scan_table, &h5a, allocator, options);
         },
     }
 }
@@ -125,7 +125,7 @@ fn sortEvents(
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
     scan_table: *ScanTable,
-    attrs: *hdf5.AttrList,
+    h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
@@ -237,7 +237,8 @@ fn sortEvents(
                     const shape = if (i + j == 1) 0 else i + j;
 
                     // Write the dataset
-                    try h5f.writeSimpleDset(i32, ev.items, shape, scan_idx, step_idx, step.value, name, attrs);
+                    var h5d: hdf5.SimpleDset(i32) = .{ .name = name, .shape = shape };
+                    try h5d.write(h5f, ev.items, scan_idx, step_idx, step.value, h5a);
 
                     // Clear the list for the next step
                     ev.clearRetainingCapacity();
@@ -252,11 +253,13 @@ fn parseHits(
     file_reader: *std.Io.File.Reader,
     h5f: *hdf5.File,
     scan_table: *ScanTable,
-    attrs: *hdf5.AttrList,
+    h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
     var reader = &file_reader.interface;
+
+    var h5d: hdf5.SimpleDset(f64) = .{ .name = ch.name, .shape = 8 };
 
     // Get the tdc channel number of the MCP signal
     const mcp_channel: u8 = @intCast(options.hptdc_hit_mcp);
@@ -320,7 +323,7 @@ fn parseHits(
             if (data.items.len == 0) continue;
 
             // Write the dataset to the hdf5 file
-            try h5f.writeSimpleDset(f64, data.items, 8, scan_idx, step_idx, step.value, ch.name, attrs);
+            try h5d.write(h5f, data.items, scan_idx, step_idx, step.value, h5a);
 
             // Clear the data of this step but keep capacity for the next step
             data.clearRetainingCapacity();
@@ -545,7 +548,7 @@ const StepEntry = struct {
 };
 
 fn appendParamTable(
-    attrs: *hdf5.AttrList,
+    h5a: *hdf5.AttrList,
     file_reader: *std.Io.File.Reader,
     offset: i64,
     size: i32,
@@ -561,7 +564,7 @@ fn appendParamTable(
         const name = param.next() orelse continue;
         const value = param.next() orelse continue;
         if (param.next() != null) continue;
-        try attrs.append(name, value);
+        try h5a.append(name, value);
     }
 }
 
