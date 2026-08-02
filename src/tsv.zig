@@ -87,11 +87,9 @@ fn parseStep(
 ) !void {
     const ncols: usize = if (shape == 0) 1 else shape;
 
-    // Keep track of scan markers in the file
-    var scan_marker: [4096]u8 = undefined;
-    var scan_idx: ?usize = null;
-
     // Channles with "step" frequency don't have step markers
+    // Keep track of scan index and step index
+    var scan_idx: ?usize = null;
     var step_idx: usize = 0;
 
     // Store data in array list
@@ -129,9 +127,8 @@ fn parseStep(
 
         // Is it a scan marker?
         if (std.mem.startsWith(u8, line, "# SCAN ")) {
-            // Update scan index and reset step marker
-            @memcpy(scan_marker[0..line.len], line);
-            scan_idx = std.fmt.parseInt(usize, scan_marker[7..line.len], 10) catch null;
+            // Update scan index and reset step index
+            scan_idx = std.fmt.parseInt(usize, line[7..], 10) catch null;
             step_idx = 0;
         }
     }
@@ -145,110 +142,131 @@ fn parseContinuous(
     attrs: *hdf5.AttrList,
     allocator: std.mem.Allocator,
 ) !void {
-    const ncols: usize = if (shape == 0) 1 else shape;
+    const col_num: usize = if (shape == 0) 1 else shape;
 
-    // Keep track of scan and step markers in the file
-    var scan_marker: [4096]u8 = undefined;
     var scan_idx: ?usize = null;
-    var step_marker: [4096]u8 = undefined;
     var step_idx: ?usize = null;
+    var step_marker: [4096]u8 = undefined;
     var step_val: ?[]u8 = null;
 
-    // Store data in array list
-    var data: std.ArrayList(f64) = try .initCapacity(allocator, 1024 * ncols);
+    var empty_step: bool = false;
+    var corrupted_marker: bool = false;
+
+    var row_buf = try allocator.alloc(f64, col_num);
+    defer allocator.free(row_buf);
+
+    var data: std.ArrayList(f64) = .empty;
     defer data.deinit(allocator);
 
-    // Read the line by line
+    // Read line by line
     while (try reader.takeDelimiter('\n')) |line| {
-        // Try parse as value first
-        if (step_idx != null) {
-            // Append data and continue to next line if parsing is succesful
+        // Try parsing the line as tab separated values first
+        if (scan_idx != null and step_idx != null) {
             var it = std.mem.splitScalar(u8, line, '\t');
-            var n: usize = 0;
-            while (it.next()) |col| {
+            var col_idx: usize = 0;
+            while (it.next()) |col| : (col_idx += 1) {
                 const val = std.fmt.parseFloat(f64, col) catch break;
-                try data.append(allocator, val);
-                n += 1;
+                if (col_idx < col_num) row_buf[col_idx] = val;
             }
 
             // Check if the line matched the expected shape
-            if (n == ncols) {
-                // Continue to next line if parsing was succesful
+            if (col_idx == col_num) {
+                // Append data and continue to next line
+                try data.appendSlice(allocator, row_buf);
                 continue;
-            } else if (n != 0) {
-                // Line is partially degraded, skipping...
-                data.shrinkRetainingCapacity(data.items.len - n);
             }
         }
 
-        // Is it a scan marker?
-        if (std.mem.startsWith(u8, line, "# SCAN ")) {
-            // Write dataset to hdf5 before continuing with next scan
-            if (step_idx != null and data.items.len > 0) {
-                try h5f.writeSimpleDset(
-                    f64,
-                    data.items,
-                    shape,
-                    scan_idx.?,
-                    step_idx.?,
-                    step_val.?,
-                    ch.name,
-                    attrs,
-                );
-                data.clearRetainingCapacity();
-            }
-
-            // Update scan index and reset step marker
-            @memcpy(scan_marker[0..line.len], line);
-            scan_idx = std.fmt.parseInt(usize, scan_marker[7..line.len], 10) catch null;
-            step_idx = null;
-
-            // Get next line
-            continue;
-        }
-
-        // Is it a step marker?
+        // Parse scan and step markers
         if (std.mem.startsWith(u8, line, "# STEP ")) {
             // Step marker should never come without a scan marker
-            if (scan_idx == null) return error.MissingMarker;
-
-            // Write dataset to hdf5 before continuing with next step
-            if (step_idx != null and data.items.len > 0) {
-                try h5f.writeSimpleDset(
-                    f64,
-                    data.items,
-                    shape,
-                    scan_idx.?,
-                    step_idx.?,
-                    step_val.?,
-                    ch.name,
-                    attrs,
-                );
-                data.clearRetainingCapacity();
+            if (scan_idx == null) {
+                corrupted_marker = true;
+                continue;
             }
 
+            // Write dataset to hdf5 before continuing with next step
+            if (scan_idx != null and step_idx != null) {
+                if (data.items.len > 0) {
+                    try h5f.writeSimpleDset(
+                        f64,
+                        data.items,
+                        shape,
+                        scan_idx.?,
+                        step_idx.?,
+                        step_val,
+                        ch.name,
+                        attrs,
+                    );
+                    data.clearRetainingCapacity();
+                } else {
+                    empty_step = true;
+                }
+            }
+
+            // Reset step index and value
+            step_idx = null;
+            step_val = null;
+
             // Find start of step value in line and update
-            if (std.mem.find(u8, line, ":")) |idx| {
-                @memcpy(step_marker[0..line.len], line);
-                step_idx = std.fmt.parseInt(usize, step_marker[7..idx], 10) catch null;
-                step_val = step_marker[idx + 2 .. line.len];
-            } else return error.CorruptedMarker;
+            if (std.mem.findScalar(u8, line, ':')) |marker_idx| {
+                step_idx = std.fmt.parseInt(usize, line[7..marker_idx], 10) catch {
+                    corrupted_marker = true;
+                    continue;
+                };
+                const val = line[marker_idx + 2 ..];
+                @memcpy(step_marker[0 .. val.len], val);
+                step_val = step_marker[0 .. val.len];
+            } else {
+                corrupted_marker = true;
+            }
+        } else if (std.mem.startsWith(u8, line, "# SCAN ")) {
+            // Write dataset to hdf5 before continuing with next scan
+            if (scan_idx != null and step_idx != null) {
+                if (data.items.len > 0) {
+                    try h5f.writeSimpleDset(
+                        f64,
+                        data.items,
+                        shape,
+                        scan_idx.?,
+                        step_idx.?,
+                        step_val,
+                        ch.name,
+                        attrs,
+                    );
+                    data.clearRetainingCapacity();
+                } else {
+                    empty_step = true;
+                }
+            }
+
+            // Update scan index and reset step
+            scan_idx = std.fmt.parseInt(usize, line[7..], 10) catch null;
+            step_idx = null;
+            step_val = null;
         }
     }
 
     // Write last dataset to hdf5
-    if (step_idx != null and data.items.len > 0) {
-        try h5f.writeSimpleDset(
-            f64,
-            data.items,
-            shape,
-            scan_idx.?,
-            step_idx.?,
-            step_val.?,
-            ch.name,
-            attrs,
-        );
+    if (scan_idx != null and step_idx != null) {
+        if (data.items.len > 0) {
+            try h5f.writeSimpleDset(
+                f64,
+                data.items,
+                shape,
+                scan_idx.?,
+                step_idx.?,
+                step_val,
+                ch.name,
+                attrs,
+            );
+        } else {
+            empty_step = true;
+        }
     }
+
+    if (corrupted_marker) return error.CorruptedMarker;
+    if (empty_step) return error.EmptySteps;
 }
 
 const Frequency = enum {
