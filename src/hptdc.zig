@@ -223,7 +223,7 @@ fn sortEvents(
                     var name = try std.fmt.bufPrint(&name_buf, "{d}E{d}{c}", .{ i, j, p2 });
                     if (options.legacy_event_names) {
                         for (0..i) |buf_idx| name_buf[buf_idx] = 'E';
-                        for (i .. j + i) |buf_idx| name_buf[buf_idx] = p2;
+                        for (i..j + i) |buf_idx| name_buf[buf_idx] = p2;
                         name = name_buf[0 .. i + j];
                     } else {
                         if (j == 0) {

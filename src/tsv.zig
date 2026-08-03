@@ -197,8 +197,8 @@ fn parseContinuous(
                     continue;
                 };
                 const val = line[marker_idx + 2 ..];
-                @memcpy(step_marker[0 .. val.len], val);
-                step_val = step_marker[0 .. val.len];
+                @memcpy(step_marker[0..val.len], val);
+                step_val = step_marker[0..val.len];
             } else {
                 corrupted_marker = true;
             }

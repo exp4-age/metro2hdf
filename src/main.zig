@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
     while (args.next()) |arg| {
         // Show usage if argument parsing fails
         errdefer |err| {
-            std.log.err("could not parse argument '{s}': {s}", .{ arg, @errorName(err) });
+            std.log.err("could not parse argument '{s}': {t}", .{ arg, err });
             std.log.info("{s}", .{usage});
         }
 
@@ -139,7 +139,7 @@ pub fn main(init: std.process.Init) !void {
 
     while (true) {
         const next = walker.next(io) catch |err| {
-            std.log.warn("skipping directory entry: {}", .{ err });
+            std.log.warn("skipping directory entry: {t}", .{err});
             continue;
         };
         const entry = next orelse break;
@@ -155,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
         // Parse the file name and skip if it fails
         run_table.addChannel(entry.path, exclude.items, include.items) catch |err| {
             if (err != error.ExcludedChannel) {
-                std.log.warn("could not parse file name '{s}': {}", .{ entry.path, err });
+                std.log.warn("could not parse file name '{s}': {t}", .{ entry.path, err });
             }
             summary.skipped_run_files += 1;
             continue;
@@ -175,7 +175,7 @@ pub fn main(init: std.process.Init) !void {
         var run = entry.value_ptr;
 
         const filename = if (short_names)
-            try std.fmt.allocPrint(allocator, "{s}.h5", .{ run.num })
+            try std.fmt.allocPrint(allocator, "{s}.h5", .{run.num})
         else
             try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
         defer allocator.free(filename);
@@ -193,7 +193,7 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             } else {
                 out_dir.deleteFile(io, filename) catch |err| {
-                    std.log.warn("could not replace '{s}': {}", .{ filepath, err });
+                    std.log.warn("could not replace '{s}': {t}", .{ filepath, err });
                     summary.skipped_files += 1;
                     continue;
                 };
@@ -204,7 +204,7 @@ pub fn main(init: std.process.Init) !void {
                 summary.new_files += 1;
             },
             else => {
-                std.log.warn("could not access '{s}': {}", .{ filepath, err });
+                std.log.warn("could not access '{s}': {t}", .{ filepath, err });
                 summary.skipped_files += 1;
             },
         }
@@ -213,14 +213,14 @@ pub fn main(init: std.process.Init) !void {
         const path = try allocator.dupeSentinel(u8, filepath, 0);
         defer allocator.free(path);
         var h5f = hdf5.File.create(path) catch |err| {
-            std.log.warn("could not create hdf5 file '{s}': {}", .{ filepath, err });
+            std.log.warn("could not create hdf5 file '{s}': {t}", .{ filepath, err });
             continue;
         };
         defer h5f.close();
 
         // Write run attributes
         run.writeAttrs(&h5f, allocator) catch |err| {
-            std.log.warn("could not write attributes for run {s}: {}", .{ run.num, err });
+            std.log.warn("could not write attributes for run {s}: {t}", .{ run.num, err });
         };
 
         // Iterate over all channels
@@ -259,7 +259,7 @@ pub fn main(init: std.process.Init) !void {
                     summary.skipped_channels += 1;
                 },
                 else => {
-                    std.log.warn("failed to parse channel '{s}' in run '{s}': {}", .{
+                    std.log.warn("failed to parse channel '{s}' in run '{s}': {t}", .{
                         ch.name,
                         run.num,
                         err,
@@ -279,6 +279,6 @@ pub fn main(init: std.process.Init) !void {
 
     // Print summary
     summary.write(stdout_writer) catch |err| {
-        std.log.warn("could not write stdout summary: {}", .{ err });
+        std.log.warn("could not write stdout summary: {t}", .{err});
     };
 }
