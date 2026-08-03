@@ -29,16 +29,22 @@ zig build -Doptimize=ReleaseFast run -- --glob="raw/*"
 ```console
 Usage: metro2hdf [OPTIONS]...
 
-  -o, --output-dir=DIR            write hdf5 files into the specified
-                                  directory (default: ".")
       --glob=GLOB                 glob string for selecting metro run
                                   files (default: "*")
   -e, --exclude=CHANNEL           exclude matching channels from
                                   processing (can be a glob string)
   -i, --include=CHANNEL           include only matching channels in
                                   the processing
-      --replace                   overwrite existing files
       --help                      show this help and exit
+
+OUTPUT OPTIONS
+  -o, --output-dir=DIR            write hdf5 files into the specified
+                                  directory (default: ".")
+      --short-names               shorten the output names to num.h5
+                                  (if there are multiple runs with
+                                  the same run number, only the first
+                                  one is processed)
+      --replace                   overwrite existing files
 
 HPTDC OPTIONS
       --hptdc-rebuild-tables      force rebuild of step tables by

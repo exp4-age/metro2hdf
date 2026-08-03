@@ -8,16 +8,22 @@ const hdf5 = @import("hdf5.zig");
 const usage =
     \\Usage: metro2hdf [OPTIONS]...
     \\
-    \\  -o, --output-dir=DIR            write hdf5 files into the specified
-    \\                                  directory (default: ".")
     \\      --glob=GLOB                 glob string for selecting metro run
     \\                                  files (default: "*")
     \\  -e, --exclude=CHANNEL           exclude matching channels from
     \\                                  processing (can be a glob string)
     \\  -i, --include=CHANNEL           include only matching channels in
     \\                                  the processing
-    \\      --replace                   overwrite existing files
     \\      --help                      show this help and exit
+    \\
+    \\OUTPUT OPTIONS
+    \\  -o, --output-dir=DIR            write hdf5 files into the specified
+    \\                                  directory (default: ".")
+    \\      --short-names               shorten the output names to num.h5
+    \\                                  (if there are multiple runs with
+    \\                                  the same run number, only the first
+    \\                                  one is processed)
+    \\      --replace                   overwrite existing files
     \\
     \\HPTDC OPTIONS
     \\      --hptdc-rebuild-tables      force rebuild of step tables by
@@ -49,6 +55,7 @@ pub fn main(init: std.process.Init) !void {
     // Default options for metro2hdf:
     var pattern: [:0]const u8 = "*";
     var output_dir: []const u8 = ".";
+    var short_names = false;
     var replace = false;
     var exclude: std.ArrayList([:0]const u8) = .empty;
     defer exclude.deinit(allocator);
@@ -84,6 +91,8 @@ pub fn main(init: std.process.Init) !void {
             try include.append(allocator, arg[10..]);
         } else if (std.mem.startsWith(u8, arg, "-i=")) {
             try include.append(allocator, arg[3..]);
+        } else if (std.mem.eql(u8, arg, "--short-names")) {
+            short_names = true;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-rebuild-tables")) {
@@ -165,7 +174,10 @@ pub fn main(init: std.process.Init) !void {
     while (run_it.next()) |entry| {
         var run = entry.value_ptr;
 
-        const filename = try std.fmt.allocPrintSentinel(allocator, "{s}.h5", .{ entry.key_ptr.* }, 0);
+        const filename = if (short_names)
+            try std.fmt.allocPrint(allocator, "{s}.h5", .{ run.num })
+        else
+            try std.fmt.allocPrint(allocator, "{s}_{s}_{s}_{s}.h5", .{ run.num, run.name, run.date, run.time });
         defer allocator.free(filename);
         const filepath = try std.fs.path.resolve(allocator, &[_][]const u8{ output_dir, filename });
         defer allocator.free(filepath);

@@ -6,16 +6,14 @@ const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
 
 pub const RunTable = struct {
-    hm: std.StringArrayHashMapUnmanaged(Run) = .empty,
+    hm: std.AutoArrayHashMapUnmanaged(u64, Run) = .empty,
     allocator: std.mem.Allocator,
 
     const SortContext = struct {
-        values: []const Run,
+        keys: []const u64,
 
         pub fn lessThan(ctx: SortContext, a_index: usize, b_index: usize) bool {
-            const a_num = std.fmt.parseInt(u64, ctx.values[a_index].num, 10) catch 0;
-            const b_num = std.fmt.parseInt(u64, ctx.values[b_index].num, 10) catch 0;
-            return a_num < b_num;
+            return ctx.keys[a_index] < ctx.keys[b_index];
         }
     };
 
@@ -28,10 +26,10 @@ pub const RunTable = struct {
     }
 
     pub fn sort(self: *@This()) void {
-        self.hm.sort(SortContext{ .values = self.hm.values() });
+        self.hm.sort(SortContext{ .keys = self.hm.keys() });
     }
 
-    pub fn iterator(self: *@This()) std.StringArrayHashMapUnmanaged(Run).Iterator {
+    pub fn iterator(self: *@This()) std.AutoArrayHashMapUnmanaged(u64, Run).Iterator {
         return self.hm.iterator();
     }
 
@@ -52,7 +50,9 @@ pub const RunTable = struct {
 
         // The first segment is the run number
         const num = it.next() orelse return error.MalformedFileName;
-        // const idx = try std.fmt.parseUnsigned(usize, num, 10);
+        const hash = std.fmt.parseUnsigned(u64, num, 10) catch {
+            return error.MissingRunNumber;
+        };
 
         // All following segments are the run name until the date is found
         var name = it.next() orelse return error.MalformedFileName;
@@ -98,17 +98,21 @@ pub const RunTable = struct {
         // Found metro screenshot
         if (format == .jpg) return error.ExcludedChannel;
 
-        const string_hash = stem[0 .. stem.len - channel.len - 1];
-
         // Add run to hash map or get the existing one
-        const gop = try self.hm.getOrPut(self.allocator, string_hash);
+        const gop = try self.hm.getOrPut(self.allocator, hash);
 
-        if (!gop.found_existing) {
+        if (gop.found_existing) {
+            // Check if run info matches
+            if (!std.mem.eql(u8, gop.value_ptr.name, name)) return error.RunNumberConflict;
+            if (!std.mem.eql(u8, gop.value_ptr.date, date)) return error.RunNumberConflict;
+            if (!std.mem.eql(u8, gop.value_ptr.time, time)) return error.RunNumberConflict;
+        } else {
             // Add new run to the hash map
             gop.value_ptr.* = .{ .num = num, .name = name, .date = date, .time = time };
         }
 
         // Append the channel to the run
+        errdefer if (!gop.found_existing) self.hm.swapRemoveAt(gop.index);
         try gop.value_ptr.addChannel(self.allocator, .{ .path = path, .name = channel, .format = format });
     }
 
@@ -270,24 +274,16 @@ pub const Summary = struct {
         const elapsed_time_in_s = @max(elapsed_time.toSeconds(), 1);
 
         try w.printAscii("Read bytes      : ", .{});
-        try formatFilesize(w, self.input_size);
-        try w.printAscii(" total (", .{});
-        if (std.math.divCeil(u64, self.input_size, elapsed_time_in_s)) |read_speed| {
-            try formatFilesize(w, read_speed);
-        } else |_| {
-            try w.writeByte('?');
-        }
-        try w.printAscii("/s)\n", .{});
+        try w.print("{B:.2} total ({B:.2}/s)\n", .{
+            self.input_size,
+            std.math.divCeil(u64, self.input_size, elapsed_time_in_s) catch 0,
+        });
 
         try w.printAscii("Write bytes     : ", .{});
-        try formatFilesize(w, self.output_size);
-        try w.printAscii(" total (", .{});
-        if (std.math.divCeil(u64, self.output_size, elapsed_time_in_s)) |write_speed| {
-            try formatFilesize(w, write_speed);
-        } else |_| {
-            try w.writeByte('?');
-        }
-        try w.printAscii("/s)\n", .{});
+        try w.print("{B:.2} total ({B:.2}/s)\n", .{
+            self.output_size,
+            std.math.divCeil(u64, self.output_size, elapsed_time_in_s) catch 0,
+        });
 
         try w.printAscii("Elapsed time    : ", .{});
         try elapsed_time.format(w);
@@ -295,37 +291,6 @@ pub const Summary = struct {
         try w.flush();
     }
 };
-
-fn formatFilesize(w: *std.Io.Writer, bytes: u64) std.Io.Writer.Error!void {
-    const bytes_remaining = bytes;
-    inline for (.{
-        .{ .bytes = 1000000000000, .sep = "T" },
-        .{ .bytes = 1000000000, .sep = "G" },
-        .{ .bytes = 1000000, .sep = "M" },
-        .{ .bytes = 1000, .sep = "k" },
-    }) |unit| {
-        const units = bytes_remaining * 1000 / unit.bytes;
-        if (units >= 1000) {
-            try w.printInt(units / 1000, 10, .lower, .{});
-            const frac = units % 1000;
-            if (frac > 0) {
-                // Write up to 3 decimal places
-                var decimal_buf = [_]u8{ '.', 0, 0, 0 };
-                var inner: std.Io.Writer = .fixed(decimal_buf[1..]);
-                inner.printInt(frac, 10, .lower, .{ .fill = '0', .width = 3 }) catch unreachable;
-                var end: usize = 4;
-                while (end > 1) : (end -= 1) {
-                    if (decimal_buf[end - 1] != '0') break;
-                }
-                try w.writeAll(decimal_buf[0..end]);
-            }
-            return w.writeAll(unit.sep);
-        }
-    }
-
-    try w.printInt(bytes_remaining, 10, .lower, .{});
-    try w.writeAll("bytes");
-}
 
 fn isDate(str: []const u8) bool {
     if (str.len != 8) return false;
