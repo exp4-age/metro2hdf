@@ -213,8 +213,6 @@ fn sortEvents(
 
             for (&events, 0..) |*row, i| {
                 for (row, 0..) |*ev, j| {
-                    if (i == 0 and j == 0) continue;
-
                     // Skip if no events where found for this category
                     if (ev.items.len == 0) continue;
 
@@ -504,6 +502,12 @@ const StepTable = struct {
     steps: std.ArrayList(StepEntry) = .empty,
     allocator: std.mem.Allocator,
 
+    const StepEntry = struct {
+        value: ?[:0]const u8,
+        data_offset: i64,
+        data_size: i64,
+    };
+
     fn append(
         self: *@This(),
         step_val: ?[]const u8,
@@ -541,12 +545,6 @@ const StepTable = struct {
     }
 };
 
-const StepEntry = struct {
-    value: ?[:0]const u8,
-    data_offset: i64,
-    data_size: i64,
-};
-
 fn appendParamTable(
     h5a: *hdf5.AttrList,
     file_reader: *std.Io.File.Reader,
@@ -559,11 +557,12 @@ fn appendParamTable(
 
     // Parse line by line
     var params = std.mem.splitScalar(u8, table, '\n');
-    while (params.next()) |line| {
+    outer: while (params.next()) |line| {
         var param = std.mem.splitScalar(u8, line, ' ');
         const name = param.next() orelse continue;
         const value = param.next() orelse continue;
         if (param.next() != null) continue;
+        for (name) |c| if (!std.ascii.isAlphanumeric(c)) continue :outer;
         try h5a.append(name, value);
     }
 }
