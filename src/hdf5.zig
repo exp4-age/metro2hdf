@@ -127,10 +127,6 @@ pub fn SimpleDset(comptime T: type) type {
                 if (data.len % self.shape != 0) return error.InvalidShape;
                 const rows = @divExact(data.len, self.shape);
                 fspace = hdf5.H5Screate_simple(2, &[2]hdf5.hsize_t{ @intCast(rows), @intCast(self.shape) }, null);
-
-                // Make 2d data column major by writing it in chunks
-                const chunk = [2]hdf5.hsize_t{ rows, 1 };
-                if (hdf5.H5Pset_chunk(dcpl, 2, &chunk) < 0) return error.H5I_INVALID_HID;
             }
             if (fspace < 0) return error.H5I_INVALID_HID;
             defer _ = hdf5.H5Sclose(fspace);
