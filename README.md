@@ -15,8 +15,7 @@ from the command line.
 
 ### Build with zig
 
-Install [zig](https://ziglang.org/download/) version 0.16.0 and then
-clone and build:
+Alternatively, `metro2hdf` can be build from source with [zig](https://ziglang.org/download/) version 0.16.0:
 
 ```bash
 git clone https://github.com/exp4-age/metro2hdf.git
@@ -65,7 +64,7 @@ HPTDC OPTIONS (HITS mode)
 ### Example
 
 ```bash
-metro2hdf --glob="raw/*" --output-dir="events" --verbose
+metro2hdf --glob="raw/*" --output-dir="events"
 ```
 
 > 🛈 On Windows the equivalent glob string would be `"raw\\*"`.
