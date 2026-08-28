@@ -9,9 +9,9 @@ const usage =
     \\Usage: metro2hdf [OPTIONS]...
     \\
     \\      --glob=GLOB                 glob string for selecting metro run
-    \\                                  files (default: "*") from a
-    \\                                  recursive walk over the current
-    \\                                  working directory
+    \\                                  files from a recursive walk over the
+    \\                                  current working directory
+    \\                                  (default: "*")
     \\  -e, --exclude=CHANNEL           exclude matching channels from
     \\                                  processing (can be a glob string)
     \\  -i, --include=CHANNEL           include only matching channels in
