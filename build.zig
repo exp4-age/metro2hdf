@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const version: std.SemanticVersion = .{ .major = 0, .minor = 2, .patch = 4 };
+const build_zig_zon = @import("build.zig.zon");
 
 const targets: []const std.Target.Query = &.{
     .{ .cpu_arch = .aarch64, .os_tag = .macos },
@@ -12,6 +12,8 @@ const targets: []const std.Target.Query = &.{
 };
 
 pub fn build(b: *std.Build) !void {
+    const version: std.SemanticVersion = try .parse(build_zig_zon.version);
+
     const zlib_dep = b.dependency("zlib", .{});
     const hdf5_dep = b.dependency("hdf5", .{});
 
@@ -23,6 +25,7 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "metro2hdf",
+        .version = version,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .link_libc = true,
@@ -55,15 +58,11 @@ pub fn build(b: *std.Build) !void {
     for (targets) |t| {
         // Define the output directory for each target
         const triple = try t.zigTriple(b.allocator);
-        const dest_subdir = b.fmt("metro2hdf-{d}.{d}.{d}-{s}", .{
-            version.major,
-            version.minor,
-            version.patch,
-            triple,
-        });
+        const dest_subdir = b.fmt("metro2hdf-{f}-{s}", .{version, triple});
 
         const release = b.addExecutable(.{
             .name = "metro2hdf",
+            .version = version,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .link_libc = true,
