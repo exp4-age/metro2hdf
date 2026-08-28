@@ -15,7 +15,8 @@ from the command line.
 
 ### Build with zig
 
-Alternatively, `metro2hdf` can be build from source with [zig](https://ziglang.org/download/) version 0.16.0:
+Alternatively, `metro2hdf` can be build from source with
+[zig](https://ziglang.org/download/) version 0.16.0:
 
 ```bash
 git clone https://github.com/exp4-age/metro2hdf.git
@@ -29,7 +30,9 @@ zig build -Doptimize=ReleaseFast run -- --glob="raw/*"
 Usage: metro2hdf [OPTIONS]...
 
       --glob=GLOB                 glob string for selecting metro run
-                                  files (default: "*")
+                                  files (default: "*") from a
+                                  recursive walk over the current
+                                  working directory
   -e, --exclude=CHANNEL           exclude matching channels from
                                   processing (can be a glob string)
   -i, --include=CHANNEL           include only matching channels in
@@ -68,6 +71,9 @@ metro2hdf --glob="raw/*" --output-dir="events"
 ```
 
 > 🛈 On Windows the equivalent glob string would be `"raw\\*"`.
+> 🛈 `metro2hdf` searches for input files starting from the current
+> working directory. Absolute paths or `"../*"` in the glob string
+> are not supported.
 
 ### Processing HPTDC data
 

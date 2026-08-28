@@ -9,7 +9,9 @@ const usage =
     \\Usage: metro2hdf [OPTIONS]...
     \\
     \\      --glob=GLOB                 glob string for selecting metro run
-    \\                                  files (default: "*")
+    \\                                  files (default: "*") from a
+    \\                                  recursive walk over the current
+    \\                                  working directory
     \\  -e, --exclude=CHANNEL           exclude matching channels from
     \\                                  processing (can be a glob string)
     \\  -i, --include=CHANNEL           include only matching channels in
@@ -119,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var summary: metro.Summary = .start_timer(io);
-    const parent_progress_node = std.Progress.start(io, .{ .root_name = "μετρο2hdf" });
+    const parent_progress_node = std.Progress.start(io, .{ .root_name = "metro2hdf" });
     errdefer parent_progress_node.end();
 
     // Get current working directory for glob'ing input files
