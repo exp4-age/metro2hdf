@@ -235,8 +235,12 @@ fn sortEvents(
                     const shape = if (i + j == 1) 0 else i + j;
 
                     // Write the dataset
-                    var h5d: hdf5.SimpleDset(i32) = .{ .name = name, .shape = shape };
-                    try h5d.write(h5f, ev.items, scan_idx, step_idx, step.value, h5a);
+                    var h5d = try h5f.writeSimpleDset(i32, ev.items, scan_idx, step_idx, name, shape);
+
+                    // Write attributes
+                    h5a.write(h5d.id) catch {};
+
+                    h5d.close();
 
                     // Clear the list for the next step
                     ev.clearRetainingCapacity();
@@ -257,8 +261,6 @@ fn parseHits(
 ) !void {
     var reader = &file_reader.interface;
 
-    var h5d: hdf5.SimpleDset(f64) = .{ .name = ch.name, .shape = 8 };
-
     // Get the tdc channel number of the MCP signal
     const mcp_channel: u8 = @intCast(options.hptdc_hit_mcp);
 
@@ -266,9 +268,10 @@ fn parseHits(
     var mask: u8 = 0;
     const filter = options.hptdc_hit_filter;
 
+    // Buffer for the dataset with size of a chunk
+    var chunk_buf: [16384]f64 = undefined;
     // Accumulate time signals of a single event in an array
     var int_buf: [8]i64 = @splat(0);
-
     // Write dataset as f64
     var float_buf: [8]f64 = @splat(0);
 
@@ -286,6 +289,13 @@ fn parseHits(
             // Skip if there is no data
             if (step.data_size < @sizeOf(Hit) or @mod(step.data_size, @sizeOf(Hit)) != 0) continue;
 
+            // Create an empty chunked dataset
+            var h5d = try h5f.createChunkedDset(f64, &chunk_buf, scan_idx, step_idx, ch.name, 8);
+            defer h5d.close();
+
+            // Write attributes
+            h5a.write(h5d.id) catch {};
+
             const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
             for (0..n) |_| {
                 const hit = try reader.takeStruct(Hit, .little);
@@ -294,7 +304,7 @@ fn parseHits(
                     // New MCP signal: process last event
                     if (mask == filter) {
                         for (int_buf, 0..) |t, i| float_buf[i] = @floatFromInt(t);
-                        try data.appendSlice(allocator, &float_buf);
+                        try h5d.appendRow(&float_buf);
                     }
 
                     // Reset times and mask
@@ -318,13 +328,7 @@ fn parseHits(
                 }
             }
 
-            if (data.items.len == 0) continue;
-
-            // Write the dataset to the hdf5 file
-            try h5d.write(h5f, data.items, scan_idx, step_idx, step.value, h5a);
-
-            // Clear the data of this step but keep capacity for the next step
-            data.clearRetainingCapacity();
+            try h5d.write();
         }
     }
 }

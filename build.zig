@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) !void {
     const hdf5_native = buildHdf5(b, hdf5_dep, zlib_dep, target, optimize);
     exe.root_module.linkLibrary(hdf5_native);
     exe.root_module.addCSourceFile(.{
-        .file = b.path("src/hdf5lib.c"),
+        .file = b.path("src/hdf5/hdf5lib.c"),
         .flags = &.{"-std=c11"},
     });
     exe.root_module.addIncludePath(b.path("src"));
@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) !void {
         const hdf5 = buildHdf5(b, hdf5_dep, zlib_dep, b.resolveTargetQuery(t), .ReleaseFast);
         release.root_module.linkLibrary(hdf5);
         release.root_module.addCSourceFile(.{
-            .file = b.path("src/hdf5lib.c"),
+            .file = b.path("src/hdf5/hdf5lib.c"),
             .flags = &.{"-std=c11"},
         });
         release.root_module.addIncludePath(b.path("src"));

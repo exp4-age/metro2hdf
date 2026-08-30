@@ -64,14 +64,12 @@ pub fn parseChannel(
         return err;
     }
 
-    var h5d: hdf5.SimpleDset(f64) = .{ .name = ch.name, .shape = shape };
-
     switch (freq) {
         .continuous => {
-            try parseContinuous(reader, h5f, &h5d, &h5a, allocator);
+            try parseContinuous(reader, h5f, shape, ch.name, &h5a, allocator);
         },
         .step => {
-            try parseStep(reader, h5f, &h5d, &h5a, allocator);
+            try parseStep(reader, h5f, shape, ch.name, &h5a, allocator);
         },
         .unknown => {
             return error.UnsupportedChannel;
@@ -82,11 +80,12 @@ pub fn parseChannel(
 fn parseStep(
     reader: *std.Io.Reader,
     h5f: *hdf5.File,
-    h5d: *hdf5.SimpleDset(f64),
+    shape: usize,
+    name: []const u8,
     h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
 ) !void {
-    const ncols: usize = if (h5d.shape == 0) 1 else h5d.shape;
+    const col_num: usize = if (shape == 0) 1 else shape;
 
     // Channles with "step" frequency don't have step markers
     // Keep track of scan index and step index
@@ -94,7 +93,7 @@ fn parseStep(
     var step_idx: usize = 0;
 
     // Store data in array list
-    var data = try allocator.alloc(f64, ncols);
+    var data = try allocator.alloc(f64, col_num);
     defer allocator.free(data);
 
     // Read line by line
@@ -111,8 +110,10 @@ fn parseStep(
             }
 
             // Check if the line matched the expected shape and write the data
-            if (n == ncols) {
-                try h5d.write(h5f, data, scan_idx.?, step_idx, null, h5a);
+            if (n == col_num) {
+                var h5d = try h5f.writeSimpleDset(f64, data, scan_idx.?, step_idx, name, shape);
+                h5a.write(h5d.id) catch {};
+                h5d.close();
                 step_idx += 1;
             }
         }
@@ -129,41 +130,40 @@ fn parseStep(
 fn parseContinuous(
     reader: *std.Io.Reader,
     h5f: *hdf5.File,
-    h5d: *hdf5.SimpleDset(f64),
+    shape: usize,
+    name: []const u8,
     h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
 ) !void {
-    const col_num: usize = if (h5d.shape == 0) 1 else h5d.shape;
+    const col_num: usize = if (shape == 0) 1 else shape;
 
     var scan_idx: ?usize = null;
     var step_idx: ?usize = null;
     var step_marker: [4096]u8 = undefined;
     var step_val: ?[]u8 = null;
 
-    var empty_step: bool = false;
-    var corrupted_marker: bool = false;
-
     var row_buf = try allocator.alloc(f64, col_num);
     defer allocator.free(row_buf);
 
-    var data: std.ArrayList(f64) = .empty;
-    defer data.deinit(allocator);
+    var buf: [16384]f64 = undefined;
+    var h5d: ?hdf5.File.ChunkedDset(f64) = null;
+    errdefer if (h5d != null) h5d.?.close();
 
     // Read line by line
     while (try reader.takeDelimiter('\n')) |line| {
         // Try parsing the line as tab separated values first
-        if (scan_idx != null and step_idx != null) {
+        if (h5d != null) {
             var it = std.mem.splitScalar(u8, line, '\t');
-            var col_idx: usize = 0;
-            while (it.next()) |col| : (col_idx += 1) {
+            var col_count: usize = 0;
+            while (it.next()) |col| : (col_count += 1) {
                 const val = std.fmt.parseFloat(f64, col) catch break;
-                if (col_idx < col_num) row_buf[col_idx] = val;
+                if (col_count < col_num) row_buf[col_count] = val;
             }
 
             // Check if the line matched the expected shape
-            if (col_idx == col_num) {
+            if (col_count == col_num) {
                 // Append data and continue to next line
-                try data.appendSlice(allocator, row_buf);
+                try h5d.?.appendRow(row_buf);
                 continue;
             }
         }
@@ -171,46 +171,37 @@ fn parseContinuous(
         // Parse scan and step markers
         if (std.mem.startsWith(u8, line, "# STEP ")) {
             // Step marker should never come without a scan marker
-            if (scan_idx == null) {
-                corrupted_marker = true;
-                continue;
-            }
+            if (scan_idx == null) continue;
 
             // Write dataset to hdf5 before continuing with next step
-            if (scan_idx != null and step_idx != null) {
-                if (data.items.len > 0) {
-                    try h5d.write(h5f, data.items, scan_idx.?, step_idx.?, step_val, h5a);
-                    data.clearRetainingCapacity();
-                } else {
-                    empty_step = true;
-                }
+            if (h5d != null) {
+                try h5d.?.write();
+                h5d.?.close();
+                h5d = null;
             }
 
             // Reset step index and value
             step_idx = null;
             step_val = null;
+            h5d = null;
 
             // Find start of step value in line and update
             if (std.mem.findScalar(u8, line, ':')) |marker_idx| {
                 step_idx = std.fmt.parseInt(usize, line[7..marker_idx], 10) catch {
-                    corrupted_marker = true;
                     continue;
                 };
                 const val = line[marker_idx + 2 ..];
                 @memcpy(step_marker[0..val.len], val);
                 step_val = step_marker[0..val.len];
-            } else {
-                corrupted_marker = true;
+                h5d = try h5f.createChunkedDset(f64, &buf, scan_idx.?, step_idx.?, name, shape);
+                h5a.write(h5d.?.id) catch {};
             }
         } else if (std.mem.startsWith(u8, line, "# SCAN ")) {
             // Write dataset to hdf5 before continuing with next scan
-            if (scan_idx != null and step_idx != null) {
-                if (data.items.len > 0) {
-                    try h5d.write(h5f, data.items, scan_idx.?, step_idx.?, step_val, h5a);
-                    data.clearRetainingCapacity();
-                } else {
-                    empty_step = true;
-                }
+            if (h5d != null) {
+                try h5d.?.write();
+                h5d.?.close();
+                h5d = null;
             }
 
             // Update scan index and reset step
@@ -221,16 +212,10 @@ fn parseContinuous(
     }
 
     // Write last dataset to hdf5
-    if (scan_idx != null and step_idx != null) {
-        if (data.items.len > 0) {
-            try h5d.write(h5f, data.items, scan_idx.?, step_idx.?, step_val, h5a);
-        } else {
-            empty_step = true;
-        }
+    if (h5d != null) {
+        try h5d.?.write();
+        h5d.?.close();
     }
-
-    if (corrupted_marker) return error.CorruptedMarker;
-    if (empty_step) return error.EmptySteps;
 }
 
 const Frequency = enum {
