@@ -236,11 +236,15 @@ fn sortEvents(
 
                     // Write the dataset
                     var h5d = try h5f.writeSimpleDset(i32, ev.items, scan_idx, step_idx, name, shape);
+                    defer h5d.close();
 
                     // Write attributes
                     h5a.write(h5d.id) catch {};
 
-                    h5d.close();
+                    // Create step value link
+                    if (step.value != null) {
+                        h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
+                    }
 
                     // Clear the list for the next step
                     ev.clearRetainingCapacity();
@@ -295,6 +299,11 @@ fn parseHits(
 
             // Write attributes
             h5a.write(h5d.id) catch {};
+
+            // Create step value link
+            if (step.value != null) {
+                h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
+            }
 
             const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
             for (0..n) |_| {

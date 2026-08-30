@@ -195,6 +195,7 @@ fn parseContinuous(
                 step_val = step_marker[0..val.len];
                 h5d = try h5f.createChunkedDset(f64, &buf, scan_idx.?, step_idx.?, name, shape);
                 h5a.write(h5d.?.id) catch {};
+                h5f.createLink(scan_idx.?, step_idx.?, step_val.?) catch {};
             }
         } else if (std.mem.startsWith(u8, line, "# SCAN ")) {
             // Write dataset to hdf5 before continuing with next scan
