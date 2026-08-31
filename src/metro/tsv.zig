@@ -1,6 +1,6 @@
 const std = @import("std");
-const metro = @import("metro.zig");
-const hdf5 = @import("hdf5.zig");
+const metro = @import("../metro.zig");
+const hdf5 = @import("../hdf5.zig");
 
 pub fn parseChannel(
     ch: metro.Channel,
@@ -145,8 +145,8 @@ fn parseContinuous(
     var row_buf = try allocator.alloc(f64, col_num);
     defer allocator.free(row_buf);
 
-    var buf: [16384]f64 = undefined;
-    var h5d: ?hdf5.File.ChunkedDset(f64) = null;
+    var buf: [1024]f64 = undefined;
+    var h5d: ?hdf5.ChunkedDset(f64) = null;
     errdefer if (h5d != null) h5d.?.close();
 
     // Read line by line

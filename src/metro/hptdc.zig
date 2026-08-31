@@ -1,6 +1,6 @@
 const std = @import("std");
-const metro = @import("metro.zig");
-const hdf5 = @import("hdf5.zig");
+const metro = @import("../metro.zig");
+const hdf5 = @import("../hdf5.zig");
 
 pub fn parseChannel(
     ch: metro.Channel,
@@ -273,7 +273,7 @@ fn parseHits(
     const filter = options.hptdc_hit_filter;
 
     // Buffer for the dataset with size of a chunk
-    var chunk_buf: [16384]f64 = undefined;
+    var chunk_buf: [1024]f64 = undefined;
     // Accumulate time signals of a single event in an array
     var int_buf: [8]i64 = @splat(0);
     // Write dataset as f64
@@ -301,9 +301,7 @@ fn parseHits(
             h5a.write(h5d.id) catch {};
 
             // Create step value link
-            if (step.value != null) {
-                h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
-            }
+            if (step.value != null) h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
 
             const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
             for (0..n) |_| {

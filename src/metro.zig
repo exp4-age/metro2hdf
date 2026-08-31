@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const glob = @import("glob.zig");
-const tsv = @import("tsv.zig");
-const hptdc = @import("hptdc.zig");
 const hdf5 = @import("hdf5.zig");
+const glob = @import("glob.zig");
+const tsv = @import("metro/tsv.zig");
+const hptdc = @import("metro/hptdc.zig");
 
 pub const RunTable = struct {
     hm: std.AutoArrayHashMapUnmanaged(u64, Run) = .empty,
@@ -44,6 +44,12 @@ pub const RunTable = struct {
 
         const stem = std.fs.path.stem(path);
         const ext = std.fs.path.extension(path);
+
+        // Parse the file extension
+        const format = try FileFormat.parse(ext);
+
+        // Skip images like metro screenshots
+        if (format == .jpg) return error.ExcludedChannel;
 
         // Split the filename into segments for parsing
         var it = std.mem.splitScalar(u8, stem, '_');
@@ -91,12 +97,6 @@ pub const RunTable = struct {
         for (exclude) |glob_str| {
             if (glob.globMatch(glob_str, channel0)) return error.ExcludedChannel;
         }
-
-        // Parse the file extension
-        const format = try FileFormat.parse(ext);
-
-        // Found metro screenshot
-        if (format == .jpg) return error.ExcludedChannel;
 
         // Add run to hash map or get the existing one
         const gop = try self.hm.getOrPut(self.allocator, hash);
@@ -210,10 +210,10 @@ const FileFormat = enum {
 
     fn parse(ext: []const u8) !FileFormat {
         if (std.mem.eql(u8, ext, ".txt")) return .txt;
-        if (std.mem.eql(u8, ext, ".h5")) return .hdf5;
-        if (std.mem.eql(u8, ext, ".hdf5")) return .hdf5;
         if (std.mem.eql(u8, ext, ".tdc")) return .tdc;
         if (std.mem.eql(u8, ext, ".jpg")) return .jpg;
+        if (std.mem.eql(u8, ext, ".h5")) return .hdf5;
+        if (std.mem.eql(u8, ext, ".hdf5")) return .hdf5;
         return error.UnknownFormat;
     }
 };

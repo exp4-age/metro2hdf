@@ -4,12 +4,12 @@ const std = @import("std");
 const hdf5 = @cImport({
     @cInclude("hdf5/hdf5lib.h");
 });
+const SimpleDset = @import("simple_dset.zig").SimpleDset;
+const ChunkedDset = @import("chunked_dset.zig").ChunkedDset;
+const Group = @import("Group.zig");
+
 
 id: hdf5.hid_t = -1,
-
-pub const SimpleDset = @import("simple_dset.zig").SimpleDset;
-pub const ChunkedDset = @import("chunked_dset.zig").ChunkedDset;
-pub const Group = @import("Group.zig");
 
 pub const OpenError = error{
     H5I_INVALID_HID,
