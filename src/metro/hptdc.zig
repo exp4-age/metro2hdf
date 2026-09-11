@@ -101,7 +101,7 @@ pub fn parseChannel(
             );
 
             // Parse the hits and group them into events
-            try parseHits(ch, &file_reader, h5f, &scan_table, &h5a, allocator, options);
+            try parseHits(ch, &file_reader, h5f, &scan_table, &h5a, options);
         },
         .GRPS => {
             // Parse or rebuild the scan table
@@ -260,81 +260,70 @@ fn parseHits(
     h5f: *hdf5.File,
     scan_table: *ScanTable,
     h5a: *hdf5.AttrList,
-    allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
     var reader = &file_reader.interface;
 
-    // Get the tdc channel number of the MCP signal
+    // TDC channel number [0,7] of the MCP signal marking the start of an event
     const mcp_channel: u8 = @intCast(options.hptdc_hit_mcp);
-
-    // Filter events based on which channels triggered using a bit mask
-    var mask: u8 = 0;
+    // Events are filtered based on which channels triggered using a bit mask
     const filter = options.hptdc_hit_filter;
-
-    // Buffer for the dataset with size of a chunk
+    var mask: u8 = 0;
+    // Buffer for a chunk of the extendable dataset
     var chunk_buf: [1024]f64 = undefined;
-    // Accumulate time signals of a single event in an array
-    var int_buf: [8]i64 = @splat(0);
-    // Write dataset as f64
-    var float_buf: [8]f64 = @splat(0);
-
-    var data: std.ArrayList(f64) = .empty;
-    defer data.deinit(allocator);
+    // Buffer for time signals of a single event
+    var row_buf: [8]i64 = @splat(0);
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
-            // Go to the step data
+            // Go to the next step marker location and check if it is one
             try file_reader.seekTo(@intCast(step.data_offset));
-
-            // Check if we are at a step marker
             if (try reader.takeStruct(Hit, .little) != Hit.step_marker) return error.MissingMarker;
+            // Skip to the next step if there is no data before creating the dataset
+            if (step.data_size < @sizeOf(Hit)) continue;
 
-            // Skip if there is no data
-            if (step.data_size < @sizeOf(Hit) or @mod(step.data_size, @sizeOf(Hit)) != 0) continue;
-
-            // Create an empty chunked dataset
+            // Create an empty chunked dataset at scan_idx/by_idx/step_idx/name
             var h5d = try h5f.createChunkedDset(f64, &chunk_buf, scan_idx, step_idx, ch.name, 8);
             defer h5d.close();
-
-            // Write attributes
+            // Write attributes to the dataset, but continue if it fails
             h5a.write(h5d.id) catch {};
-
-            // Create step value link
+            // Create step value link scan_idx/step_value/name in the hdf5 file
             if (step.value != null) h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
 
-            const n: usize = @intCast(@divExact(step.data_size, @sizeOf(Hit)));
-            for (0..n) |_| {
+            var size: i64 = 0;
+            while (size < step.data_size) : (size += @sizeOf(Hit)) {
                 const hit = try reader.takeStruct(Hit, .little);
 
                 if (hit.channel == mcp_channel) {
-                    // New MCP signal: process last event
                     if (mask == filter) {
-                        for (int_buf, 0..) |t, i| float_buf[i] = @floatFromInt(t);
-                        try h5d.appendRow(&float_buf);
+                        // Convert to f64 which is typically used in further analysis
+                        var row: [8]f64 = undefined;
+                        inline for (row_buf, 0..) |t, i| row[i] = @floatFromInt(t);
+                        // Append last event to the dataset (the chunk buffer is
+                        // automatically written to the hdf5 file when it is full)
+                        try h5d.appendRow(&row);
                     }
-
-                    // Reset times and mask
-                    int_buf = @splat(0);
+                    // Reset times and mask for the next event
+                    row_buf = @splat(0);
                     mask = 0;
                 } else if (hit.channel > 7) {
                     // More than 8 tdc channels are currently not supported
                     continue;
                 }
 
-                // Bit mask corresponding to the channel
+                // Bit mask corresponding to the channel of the hit
                 const shift: u3 = @intCast(hit.channel);
                 const bit: u8 = @as(u8, 1) << shift;
-
                 // Check if this is the first occurence of this channel for this event,
                 // if a channel triggered multiple times only the first time is used
                 if (~mask & bit != 0) {
-                    // Store the time and update the mask
-                    int_buf[hit.channel] = hit.time;
+                    // Store the time in the buffer and update the mask
+                    row_buf[hit.channel] = hit.time;
                     mask |= bit;
                 }
             }
 
+            // Write the last partially filled chunk
             try h5d.write();
         }
     }
