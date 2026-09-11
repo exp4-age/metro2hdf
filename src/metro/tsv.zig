@@ -14,9 +14,9 @@ pub fn parseChannel(
     _ = &options;
 
     // Initialize the reader
-    const buf_size = 4096;
+    const buf_size = 64 * 1024;
     var read_buffer: [buf_size]u8 = undefined;
-    var file_reader = file.readerStreaming(io, &read_buffer);
+    var file_reader = file.reader(io, &read_buffer);
     var reader = &file_reader.interface;
 
     // The data channels ..._xspec and ..._yspec have more values per scan
