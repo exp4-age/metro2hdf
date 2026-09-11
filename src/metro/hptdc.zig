@@ -11,7 +11,7 @@ pub fn parseChannel(
     options: metro.Options,
 ) !void {
     // Initialize the reader
-    const buf_size = 4096;
+    const buf_size = 64 * 1024;
     var read_buffer: [buf_size]u8 = undefined;
     var file_reader = file.reader(io, &read_buffer);
     var reader = &file_reader.interface;
@@ -265,7 +265,7 @@ fn parseHits(
     var reader = &file_reader.interface;
 
     // TDC channel number [0,7] of the MCP signal marking the start of an event
-    const mcp_channel: u8 = @intCast(options.hptdc_hit_mcp);
+    const mcp_channel: u3 = options.hptdc_hit_mcp;
     // Events are filtered based on which channels triggered using a bit mask
     const filter = options.hptdc_hit_filter;
     var mask: u8 = 0;
@@ -294,21 +294,19 @@ fn parseHits(
             while (size < step.data_size) : (size += @sizeOf(Hit)) {
                 const hit = try reader.takeStruct(Hit, .little);
 
+                // More than 8 tdc channels are currently not supported
+                if (hit.channel > 7) {
+                    @branchHint(.unlikely);
+                    continue;
+                }
+
                 if (hit.channel == mcp_channel) {
-                    if (mask == filter) {
-                        // Convert to f64 which is typically used in further analysis
-                        var row: [8]f64 = undefined;
-                        inline for (row_buf, 0..) |t, i| row[i] = @floatFromInt(t);
-                        // Append last event to the dataset (the chunk buffer is
-                        // automatically written to the hdf5 file when it is full)
-                        try h5d.appendRow(&row);
-                    }
+                    // Append previous event to the dataset (the chunk buffer is
+                    // automatically written to the hdf5 file when it is full)
+                    if (mask == filter) try h5d.appendRow(&row_buf);
                     // Reset times and mask for the next event
                     row_buf = @splat(0);
                     mask = 0;
-                } else if (hit.channel > 7) {
-                    // More than 8 tdc channels are currently not supported
-                    continue;
                 }
 
                 // Bit mask corresponding to the channel of the hit
@@ -316,13 +314,15 @@ fn parseHits(
                 const bit: u8 = @as(u8, 1) << shift;
                 // Check if this is the first occurence of this channel for this event,
                 // if a channel triggered multiple times only the first time is used
-                if (~mask & bit != 0) {
+                if (mask & bit == 0) {
                     // Store the time in the buffer and update the mask
                     row_buf[hit.channel] = hit.time;
                     mask |= bit;
                 }
             }
 
+            // Append the last event
+            if (mask == filter) try h5d.appendRow(&row_buf);
             // Write the last partially filled chunk
             try h5d.write();
         }

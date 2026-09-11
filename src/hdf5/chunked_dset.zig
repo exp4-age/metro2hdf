@@ -134,11 +134,52 @@ pub fn ChunkedDset(comptime T: type) type {
             self.row_count = 0;
         }
 
-        pub fn appendRow(self: *@This(), row: []const T) WriteError!void {
+        pub fn appendRow(self: *@This(), row: anytype) WriteError!void {
+            if (self.row_count * self.shape + self.shape > self.buffer.len) try self.write();
+            // Compute this after write(), since write() may reset row_count.
             const start = self.row_count * self.shape;
-            if (start + self.shape > self.buffer.len) try self.write();
-            @memcpy(self.buffer[start..][0..self.shape], row);
+            const dst = self.buffer[start..][0..self.shape];
+            const Src = @TypeOf(row[0]);
+            if (T == Src) {
+                @memcpy(dst, row);
+            } else {
+                for (dst, row) |*out, value| out.* = castNumber(value);
+            }
             self.row_count += 1;
+        }
+
+        fn castNumber(value: anytype) T {
+            const Src = @TypeOf(value);
+
+            return switch (@typeInfo(T)) {
+                .int => switch (@typeInfo(Src)) {
+                    .int, .comptime_int =>
+                        @as(T, @intCast(value)),
+
+                    .float, .comptime_float =>
+                        @as(T, @intFromFloat(value)),
+
+                    else => @compileError(
+                        "source element type must be an integer or float",
+                    ),
+                },
+
+                .float => switch (@typeInfo(Src)) {
+                    .int, .comptime_int =>
+                        @as(T, @floatFromInt(value)),
+
+                    .float, .comptime_float =>
+                        @as(T, @floatCast(value)),
+
+                    else => @compileError(
+                        "source element type must be an integer or float",
+                    ),
+                },
+
+                else => @compileError(
+                    "dataset type must be an integer or float",
+                ),
+            };
         }
 
         pub fn close(self: *@This()) void {
