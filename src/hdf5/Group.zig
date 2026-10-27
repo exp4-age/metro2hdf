@@ -1,9 +1,7 @@
 const Group = @This();
 
 const std = @import("std");
-const hdf5 = @cImport({
-    @cInclude("hdf5/hdf5lib.h");
-});
+const hdf5 = @import("libhdf5");
 
 id: hdf5.hid_t = -1,
 

@@ -74,8 +74,8 @@ pub fn main(init: std.process.Init) !void {
 
     while (args.next()) |arg| {
         // Show usage if argument parsing fails
-        errdefer |err| {
-            std.log.err("could not parse argument '{s}': {t}", .{ arg, err });
+        errdefer {
+            std.log.err("could not parse argument '{s}'", .{ arg });
             std.log.info("{s}", .{usage});
         }
 

@@ -1,9 +1,7 @@
 const AttrList = @This();
 
 const std = @import("std");
-const hdf5 = @cImport({
-    @cInclude("hdf5/hdf5lib.h");
-});
+const hdf5 = @import("libhdf5");
 
 attrs: std.ArrayList(Attribute) = .empty,
 allocator: std.mem.Allocator,

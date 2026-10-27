@@ -1,9 +1,7 @@
 const File = @This();
 
 const std = @import("std");
-const hdf5 = @cImport({
-    @cInclude("hdf5/hdf5lib.h");
-});
+const hdf5 = @import("libhdf5");
 const SimpleDset = @import("simple_dset.zig").SimpleDset;
 const ChunkedDset = @import("chunked_dset.zig").ChunkedDset;
 const Group = @import("Group.zig");
