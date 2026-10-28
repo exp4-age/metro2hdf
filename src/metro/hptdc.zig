@@ -101,7 +101,7 @@ pub fn parseChannel(
             );
 
             // Parse the hits and group them into events
-            try parseHits(ch, &file_reader, h5f, &scan_table, &h5a, options);
+            try parseHits(ch, &file_reader, h5f, &scan_table, &h5a, allocator, options);
         },
         .GRPS => {
             // Parse or rebuild the scan table
@@ -235,15 +235,20 @@ fn sortEvents(
                     const shape = if (i + j == 1) 0 else i + j;
 
                     // Write the dataset
-                    var h5d = try h5f.writeSimpleDset(i32, ev.items, scan_idx, step_idx, name, shape);
+                    const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
+                    defer allocator.free(path);
+                    var h5d: hdf5.FixedDset(i32) = try .create(h5f.id, path, shape, ev.items);
                     defer h5d.close();
 
                     // Write attributes
                     h5a.write(h5d.id) catch {};
-
                     // Create step value link
-                    if (step.value != null) {
-                        h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
+                    if (step.value) |step_val| {
+                        const target = try allocator.printSentinel("{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
+                        defer allocator.free(target);
+                        const link = try allocator.printSentinel("{d}/{s}", .{ scan_idx, step_val }, 0);
+                        defer allocator.free(link);
+                        h5f.createLink(target, link) catch {};
                     }
 
                     // Clear the list for the next step
@@ -260,6 +265,7 @@ fn parseHits(
     h5f: *hdf5.File,
     scan_table: *ScanTable,
     h5a: *hdf5.AttrList,
+    allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
     var reader = &file_reader.interface;
@@ -269,10 +275,8 @@ fn parseHits(
     // Events are filtered based on which channels triggered using a bit mask
     const filter = options.hptdc_hit_filter;
     var mask: u8 = 0;
-    // Buffer for a chunk of the extendable dataset
-    var chunk_buf: [1024]f64 = undefined;
     // Buffer for time signals of a single event
-    var row_buf: [8]i64 = @splat(0);
+    var row_buf: [8]f64 = @splat(0);
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
@@ -283,12 +287,11 @@ fn parseHits(
             if (step.data_size < @sizeOf(Hit)) continue;
 
             // Create an empty chunked dataset at scan_idx/by_idx/step_idx/name
-            var h5d = try h5f.createChunkedDset(f64, &chunk_buf, scan_idx, step_idx, ch.name, 8);
+            const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, ch.name }, 0);
+            defer allocator.free(path);
+            var h5d: hdf5.AllocatingDset(f64) = try .create(h5f.id, path, 8, allocator);
             defer h5d.close();
-            // Write attributes to the dataset, but continue if it fails
-            h5a.write(h5d.id) catch {};
-            // Create step value link scan_idx/step_value/name in the hdf5 file
-            if (step.value != null) h5f.createLink(scan_idx, step_idx, step.value.?) catch {};
+            var writer = &h5d.interface;
 
             var size: i64 = 0;
             while (size < step.data_size) : (size += @sizeOf(Hit)) {
@@ -303,7 +306,7 @@ fn parseHits(
                 if (hit.channel == mcp_channel) {
                     // Append previous event to the dataset (the chunk buffer is
                     // automatically written to the hdf5 file when it is full)
-                    if (mask == filter) try h5d.appendRow(&row_buf);
+                    if (mask == filter) try writer.appendRow(&row_buf);
                     // Reset times and mask for the next event
                     row_buf = @splat(0);
                     mask = 0;
@@ -316,15 +319,26 @@ fn parseHits(
                 // if a channel triggered multiple times only the first time is used
                 if (mask & bit == 0) {
                     // Store the time in the buffer and update the mask
-                    row_buf[hit.channel] = hit.time;
+                    row_buf[hit.channel] = @floatFromInt(hit.time);
                     mask |= bit;
                 }
             }
 
             // Append the last event
-            if (mask == filter) try h5d.appendRow(&row_buf);
-            // Write the last partially filled chunk
-            try h5d.write();
+            if (mask == filter) try writer.appendRow(&row_buf);
+
+            // Write dataset
+            try writer.flush();
+            // Write attributes to the dataset
+            h5a.write(h5d.id) catch {};
+            // Create a shortcut link scan_idx/step_val pointing to scan_idx/by_idx/step_idx
+            if (step.value) |step_val| {
+                const target = try allocator.printSentinel("{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
+                defer allocator.free(target);
+                const link = try allocator.printSentinel("{d}/{s}", .{ scan_idx, step_val }, 0);
+                defer allocator.free(link);
+                h5f.createLink(target, link) catch {};
+            }
         }
     }
 }

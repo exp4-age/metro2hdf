@@ -2,8 +2,6 @@ const File = @This();
 
 const std = @import("std");
 const hdf5 = @import("libhdf5");
-const SimpleDset = @import("simple_dset.zig").SimpleDset;
-const ChunkedDset = @import("chunked_dset.zig").ChunkedDset;
 const Group = @import("Group.zig");
 
 
@@ -43,16 +41,8 @@ pub fn close(self: *@This()) void {
     }
 }
 
-pub fn createLink(self: *@This(), scan_idx: usize, step_idx: usize, step_val: []const u8) !void {
+pub fn createLink(self: *@This(), target: [:0]const u8, link: [:0]const u8) !void {
     if (self.id < 0) return LinkError.FileNotOpen;
-
-    // Format target path for the link
-    var target_buf: [1024]u8 = undefined;
-    const target = try std.fmt.bufPrintSentinel(&target_buf, "{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
-
-    // Format link path using the step value
-    var link_buf: [1024]u8 = undefined;
-    const link = try std.fmt.bufPrintSentinel(&link_buf, "{d}/{s}", .{ scan_idx, step_val }, 0);
 
     // Check if the link already exists
     if (hdf5.H5Lexists(self.id, link.ptr, hdf5.H5P_DEFAULT) > 0) return;
@@ -75,32 +65,4 @@ pub fn openGroup(self: @This(), path: [:0]const u8) !Group {
 
 pub fn openRoot(self: @This()) !Group {
     return try self.openGroup("/");
-}
-
-pub fn writeSimpleDset(
-    self: File,
-    comptime T: type,
-    buffer: []T,
-    scan_idx: usize,
-    step_idx: usize,
-    name: []const u8,
-    shape: usize
-) !SimpleDset(T) {
-    var buf: [1024]u8 = undefined;
-    const path = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
-    return try .write(self.id, path, shape, buffer);
-}
-
-pub fn createChunkedDset(
-    self: File,
-    comptime T: type,
-    buffer: []T,
-    scan_idx: usize,
-    step_idx: usize,
-    name: []const u8,
-    shape: usize
-) !ChunkedDset(T) {
-    var buf: [1024]u8 = undefined;
-    const path = try std.fmt.bufPrintSentinel(&buf, "{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
-    return try .create(self.id, path, shape, buffer);
 }

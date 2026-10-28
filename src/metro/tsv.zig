@@ -111,7 +111,9 @@ fn parseStep(
 
             // Check if the line matched the expected shape and write the data
             if (n == col_num) {
-                var h5d = try h5f.writeSimpleDset(f64, data, scan_idx.?, step_idx, name, shape);
+                const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx.?, step_idx, name }, 0);
+                defer allocator.free(path);
+                var h5d: hdf5.FixedDset(f64) = try .create(h5f.id, path, shape, data);
                 h5a.write(h5d.id) catch {};
                 h5d.close();
                 step_idx += 1;
@@ -136,86 +138,61 @@ fn parseContinuous(
     allocator: std.mem.Allocator,
 ) !void {
     const col_num: usize = if (shape == 0) 1 else shape;
-
-    var scan_idx: ?usize = null;
-    var step_idx: ?usize = null;
-    var step_marker: [4096]u8 = undefined;
-    var step_val: ?[]u8 = null;
-
     var row_buf = try allocator.alloc(f64, col_num);
     defer allocator.free(row_buf);
 
-    var buf: [1024]f64 = undefined;
-    var h5d: ?hdf5.ChunkedDset(f64) = null;
-    errdefer if (h5d != null) h5d.?.close();
+    while (try reader.takeDelimiter('\n')) |scan_marker| {
+        if (!std.mem.startsWith(u8, scan_marker, "# SCAN ")) continue;
+        const scan_idx = std.fmt.parseInt(usize, scan_marker[7..], 10) catch continue;
 
-    // Read line by line
-    while (try reader.takeDelimiter('\n')) |line| {
-        // Try parsing the line as tab separated values first
-        if (h5d != null) {
-            var it = std.mem.splitScalar(u8, line, '\t');
-            var col_count: usize = 0;
-            while (it.next()) |col| : (col_count += 1) {
-                const val = std.fmt.parseFloat(f64, col) catch break;
-                if (col_count < col_num) row_buf[col_count] = val;
-            }
+        while (reader.peekDelimiterInclusive('\n')) |step_marker| {
+            // Go back to main loop if a scan marker was found without
+            // advancing seek position
+            if (std.mem.startsWith(u8, step_marker, "# SCAN ")) break;
+            reader.toss(step_marker.len);
+            if (!std.mem.startsWith(u8, step_marker, "# STEP ")) continue;
 
-            // Check if the line matched the expected shape
-            if (col_count == col_num) {
-                // Append data and continue to next line
-                try h5d.?.appendRow(row_buf);
-                continue;
-            }
-        }
+            const idx = std.mem.findScalar(u8, step_marker, ':') orelse continue;
+            const step_idx = std.fmt.parseInt(usize, step_marker[7..idx], 10) catch continue;
+            const step_val = try allocator.dupeSentinel(u8, step_marker[idx + 2 ..], 0);
+            defer allocator.free(step_val);
 
-        // Parse scan and step markers
-        if (std.mem.startsWith(u8, line, "# STEP ")) {
-            // Step marker should never come without a scan marker
-            if (scan_idx == null) continue;
+            const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
+            defer allocator.free(path);
+            var h5d: hdf5.AllocatingDset(f64) = try .create(h5f.id, path, shape, allocator);
+            defer h5d.close();
+            var writer = &h5d.interface;
 
-            // Write dataset to hdf5 before continuing with next step
-            if (h5d != null) {
-                try h5d.?.write();
-                h5d.?.close();
-                h5d = null;
-            }
+            while (reader.peekDelimiterExclusive('\n')) |line| {
+                var it = std.mem.splitScalar(u8, line, '\t');
+                var col_count: usize = 0;
+                while (it.next()) |col| : (col_count += 1) {
+                    const val = std.fmt.parseFloat(f64, col) catch break;
+                    if (col_count < col_num) row_buf[col_count] = val;
+                }
 
-            // Reset step index and value
-            step_idx = null;
-            step_val = null;
-            h5d = null;
+                // Check if the line matched the expected shape
+                if (col_count == col_num) {
+                    // Append data and continue to next line
+                    try writer.appendRow(row_buf);
+                } else {
+                    if (std.mem.startsWith(u8, line, "# SCAN ")) break;
+                    if (std.mem.startsWith(u8, line, "# STEP ")) break;
+                }
 
-            // Find start of step value in line and update
-            if (std.mem.findScalar(u8, line, ':')) |marker_idx| {
-                step_idx = std.fmt.parseInt(usize, line[7..marker_idx], 10) catch {
-                    continue;
-                };
-                const val = line[marker_idx + 2 ..];
-                @memcpy(step_marker[0..val.len], val);
-                step_val = step_marker[0..val.len];
-                h5d = try h5f.createChunkedDset(f64, &buf, scan_idx.?, step_idx.?, name, shape);
-                h5a.write(h5d.?.id) catch {};
-                h5f.createLink(scan_idx.?, step_idx.?, step_val.?) catch {};
-            }
-        } else if (std.mem.startsWith(u8, line, "# SCAN ")) {
-            // Write dataset to hdf5 before continuing with next scan
-            if (h5d != null) {
-                try h5d.?.write();
-                h5d.?.close();
-                h5d = null;
-            }
+                reader.toss(line.len + 1);
+            } else |_| {}
 
-            // Update scan index and reset step
-            scan_idx = std.fmt.parseInt(usize, line[7..], 10) catch null;
-            step_idx = null;
-            step_val = null;
-        }
-    }
-
-    // Write last dataset to hdf5
-    if (h5d != null) {
-        try h5d.?.write();
-        h5d.?.close();
+            try writer.flush();
+            // Write attributes to the dataset
+            h5a.write(h5d.id) catch {};
+            // Create a shortcut link scan_idx/step_val pointing to scan_idx/by_idx/step_idx
+            const target = try allocator.printSentinel("{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
+            defer allocator.free(target);
+            const link = try allocator.printSentinel("{d}/{s}", .{ scan_idx, step_val }, 0);
+            defer allocator.free(link);
+            h5f.createLink(target, link) catch {};
+        } else |_| {}
     }
 }
 
