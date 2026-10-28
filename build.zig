@@ -50,14 +50,14 @@ pub fn build(b: *std.Build) !void {
     const release_step = b.step("release", "Build binary release");
 
     for (targets) |t| {
-        // Define the output directory for each target
         const triple = try t.zigTriple(b.allocator);
-        const dest_subdir = b.fmt("metro2hdf-{f}-{s}", .{version, triple});
+        const release_target = b.resolveTargetQuery(t);
+        const is_windows = release_target.result.os.tag == .windows;
 
-        const libhdf5_rel = buildHdf5(b, b.resolveTargetQuery(t), .ReleaseFast);
+        const libhdf5_rel = buildHdf5(b, release_target, .ReleaseFast);
         const trans_libhdf5_rel: Translator = .init(translate_c, .{
             .c_source_file = b.path("src/hdf5/hdf5lib.c"),
-            .target = b.resolveTargetQuery(t),
+            .target = release_target,
             .optimize = .ReleaseFast,
         });
         trans_libhdf5_rel.linkLibrary(libhdf5_rel);
@@ -68,36 +68,52 @@ pub fn build(b: *std.Build) !void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .link_libc = true,
-                .target = b.resolveTargetQuery(t),
+                .target = release_target,
                 .optimize = .ReleaseFast,
             }),
         });
 
         release.root_module.addImport("libhdf5", trans_libhdf5_rel.mod);
 
-        const target_output = b.addInstallArtifact(release, .{
-            .dest_dir = .{
-                .override = .{
-                    .custom = dest_subdir,
-                },
-            },
-        });
-        release_step.dependOn(&target_output.step);
+        const target_output = b.addInstallArtifact(release, .{});
 
+        const staging = b.addWriteFiles();
+        staging.step.dependOn(&target_output.step);
+        // Add the build binary
+        const exe_path = if (is_windows) "bin/metro2hdf.exe" else "bin/metro2hdf";
+        _ = staging.addCopyFile(release.getEmittedBin(), exe_path);
         // Add the metro2hdf README
-        const readme_path = b.fmt("{s}/README.md", .{dest_subdir});
-        const readme = b.addInstallFile(b.path("README.md"), readme_path);
-        release_step.dependOn(&readme.step);
-
+        _ = staging.addCopyFile(b.path("README.md"), "README.md");
         // Add the metro2hdf license
-        const license_path = b.fmt("{s}/LICENSE", .{dest_subdir});
-        const license = b.addInstallFile(b.path("LICENSE"), license_path);
-        release_step.dependOn(&license.step);
-
+        _ = staging.addCopyFile(b.path("LICENSE"), "LICENSE");
         // Add the hdf5 license
-        const hdf5_license_path = b.fmt("{s}/vendor/hdf5/LICENSE", .{dest_subdir});
-        const hdf5_license = b.addInstallFile(hdf5_dep.path("LICENSE"), hdf5_license_path);
-        release_step.dependOn(&hdf5_license.step);
+        _ = staging.addCopyFile(hdf5_dep.path("LICENSE"), "vendor/LICENSE");
+
+        const cmd = if (is_windows) "zip" else "tar";
+        const archive = b.addSystemCommand(&.{ cmd });
+        archive.step.dependOn(&staging.step);
+
+        const ext = if (is_windows) "zip" else "tar.gz";
+        const sub_path = b.fmt("metro2hdf-{f}-{s}.{s}", .{version, triple, ext});
+        var archive_output: std.Build.LazyPath = undefined;
+
+        if (is_windows) {
+            archive.addArg("-qr");
+            archive_output = archive.addOutputFileArg(sub_path);
+            archive.setCwd(staging.getDirectory());
+            archive.addArg(".");
+        } else {
+            archive.addArg("-czf");
+            archive_output = archive.addOutputFileArg(sub_path);
+            archive.addArg("-C");
+            archive.addDirectoryArg(staging.getDirectory());
+            archive.addArg(".");
+        }
+
+        const install_archive = b.addInstallFile(archive_output, sub_path);
+        install_archive.step.dependOn(&archive.step);
+
+        release_step.dependOn(&install_archive.step);
     }
 }
 
@@ -135,6 +151,7 @@ fn buildHdf5(
         .linkage = .static,
     });
     lib.installHeadersDirectory(hdf5_dep.path("src"), "", .{});
+    lib.installHeadersDirectory(hdf5_dep.path("src/H5FDsubfiling"), "", .{});
 
     const config_header = hdf5ConfigHeader(b, lib.version.?, target);
     mod.addConfigHeader(config_header);
@@ -207,6 +224,8 @@ fn hdf5ConfigHeader(
             .H5_WANT_DCONV_EXCEPTION = true,
             .H5_USE_200_API_DEFAULT = true,
             .H5_DEFAULT_PLUGINDIR = "",
+            .H5_HAVE_ATTRIBUTE = true,
+            .H5_HAVE_SYS_STAT_H = true,
         },
     );
 
@@ -222,7 +241,6 @@ fn hdf5ConfigHeader(
     } else {
         header.addValues(.{
             .H5_HAVE_UNISTD_H = true,
-            .H5_HAVE_SYS_STAT_H = true,
             .H5_HAVE_SYS_FILE_H = true,
             .H5_HAVE_FSEEKO = true,
             .H5_SIZEOF_SSIZE_T = 8,
