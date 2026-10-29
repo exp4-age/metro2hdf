@@ -277,6 +277,13 @@ fn parseHits(
     var mask: u8 = 0;
     // Buffer for time signals of a single event
     var row_buf: [8]f64 = @splat(0);
+    // Allocate one reusable chunk buffer when chunking is enabled
+    var chunk_buf: ?[]f64 = null;
+    if (options.chunk_size != 0) {
+        const chunk_len = @divFloor(options.chunk_size, @sizeOf(f64));
+        chunk_buf = try allocator.alloc(f64, chunk_len);
+    }
+    defer if (chunk_buf) |buf| allocator.free(buf);
 
     for (scan_table.scans.items, 0..) |step_table, scan_idx| {
         for (step_table.steps.items, 0..) |step, step_idx| {
@@ -289,9 +296,9 @@ fn parseHits(
             // Create an empty chunked dataset at scan_idx/by_idx/step_idx/name
             const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, ch.name }, 0);
             defer allocator.free(path);
-            var h5d: hdf5.AllocatingDset(f64) = try .create(h5f.id, path, 8, allocator);
+            var h5d: hdf5.BufferedDset(f64) = try .create(h5f.id, path, 8, allocator, chunk_buf);
             defer h5d.close();
-            var writer = &h5d.interface;
+            var writer = h5d.writer();
 
             var size: i64 = 0;
             while (size < step.data_size) : (size += @sizeOf(Hit)) {
@@ -330,7 +337,7 @@ fn parseHits(
             // Write dataset
             try writer.flush();
             // Write attributes to the dataset
-            h5a.write(h5d.id) catch {};
+            h5a.write(h5d.id()) catch {};
             // Create a shortcut link scan_idx/step_val pointing to scan_idx/by_idx/step_idx
             if (step.value) |step_val| {
                 const target = try allocator.printSentinel("{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);

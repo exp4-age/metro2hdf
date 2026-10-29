@@ -224,6 +224,7 @@ pub const Options = struct {
     legacy_event_names: bool = false,
     hptdc_hit_filter: u8 = (@as(u8, 1) << 7) - 1,
     hptdc_hit_mcp: u3 = 6,
+    chunk_size: usize = 0,
 };
 
 pub const Summary = struct {

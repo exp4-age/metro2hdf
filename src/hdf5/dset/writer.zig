@@ -12,6 +12,7 @@ pub fn Writer(comptime T: type) type {
             DsetEmpty,
             FileNotOpen,
             LcplError,
+            DcplError,
             ShapeMismatch,
             OutOfMemory,
             H5I_INVALID_HID,

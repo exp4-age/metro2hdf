@@ -10,9 +10,6 @@ pub fn parseChannel(
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
-    // Currently no options supported
-    _ = &options;
-
     // Initialize the reader
     const buf_size = 64 * 1024;
     var read_buffer: [buf_size]u8 = undefined;
@@ -66,7 +63,7 @@ pub fn parseChannel(
 
     switch (freq) {
         .continuous => {
-            try parseContinuous(reader, h5f, shape, ch.name, &h5a, allocator);
+            try parseContinuous(reader, h5f, shape, ch.name, &h5a, allocator, options);
         },
         .step => {
             try parseStep(reader, h5f, shape, ch.name, &h5a, allocator);
@@ -136,20 +133,32 @@ fn parseContinuous(
     name: []const u8,
     h5a: *hdf5.AttrList,
     allocator: std.mem.Allocator,
+    options: metro.Options,
 ) !void {
     const col_num: usize = if (shape == 0) 1 else shape;
-    var row_buf = try allocator.alloc(f64, col_num);
+    const chunk_size = options.chunk_size;
+
+    // Allocate a row buffer
+    const row_buf = try allocator.alloc(f64, col_num);
     defer allocator.free(row_buf);
+
+    // Allocate one reusable chunk buffer when chunking is enabled.
+    var chunk_buf: ?[]f64 = null;
+    if (chunk_size != 0) {
+        const chunk_len = @divFloor(chunk_size, @sizeOf(f64));
+        chunk_buf = try allocator.alloc(f64, chunk_len);
+    }
+    defer if (chunk_buf) |buf| allocator.free(buf);
 
     while (try reader.takeDelimiter('\n')) |scan_marker| {
         if (!std.mem.startsWith(u8, scan_marker, "# SCAN ")) continue;
         const scan_idx = std.fmt.parseInt(usize, scan_marker[7..], 10) catch continue;
 
-        while (reader.peekDelimiterInclusive('\n')) |step_marker| {
+        while (reader.peekDelimiterExclusive('\n')) |step_marker| {
             // Go back to main loop if a scan marker was found without
             // advancing seek position
             if (std.mem.startsWith(u8, step_marker, "# SCAN ")) break;
-            reader.toss(step_marker.len);
+            reader.toss(step_marker.len + 1);
             if (!std.mem.startsWith(u8, step_marker, "# STEP ")) continue;
 
             const idx = std.mem.findScalar(u8, step_marker, ':') orelse continue;
@@ -159,9 +168,9 @@ fn parseContinuous(
 
             const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
             defer allocator.free(path);
-            var h5d: hdf5.AllocatingDset(f64) = try .create(h5f.id, path, shape, allocator);
+            var h5d: hdf5.BufferedDset(f64) = try .create(h5f.id, path, shape, allocator, chunk_buf);
             defer h5d.close();
-            var writer = &h5d.interface;
+            var writer = h5d.writer();
 
             while (reader.peekDelimiterExclusive('\n')) |line| {
                 var it = std.mem.splitScalar(u8, line, '\t');
@@ -185,7 +194,7 @@ fn parseContinuous(
 
             try writer.flush();
             // Write attributes to the dataset
-            h5a.write(h5d.id) catch {};
+            h5a.write(h5d.id()) catch {};
             // Create a shortcut link scan_idx/step_val pointing to scan_idx/by_idx/step_idx
             const target = try allocator.printSentinel("{d}/by_idx/{d}", .{ scan_idx, step_idx }, 0);
             defer allocator.free(target);
