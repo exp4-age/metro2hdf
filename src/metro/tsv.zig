@@ -142,7 +142,7 @@ fn parseContinuous(
     const row_buf = try allocator.alloc(f64, col_num);
     defer allocator.free(row_buf);
 
-    // Allocate one reusable chunk buffer when chunking is enabled.
+    // Allocate one reusable chunk buffer when chunking is enabled
     var chunk_buf: ?[]f64 = null;
     if (chunk_size != 0) {
         const chunk_len = @divFloor(chunk_size, @sizeOf(f64));
@@ -168,9 +168,12 @@ fn parseContinuous(
 
             const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
             defer allocator.free(path);
-            var h5d: hdf5.BufferedDset(f64) = try .create(h5f.id, path, shape, allocator, chunk_buf);
+            var h5d: hdf5.BufferedDset(f64) =
+                if (chunk_buf) |buf|
+                    .chunked(buf, path, shape, h5f.id)
+                else
+                    .allocating(allocator, path, shape, h5f.id);
             defer h5d.close();
-            var writer = h5d.writer();
 
             while (reader.peekDelimiterExclusive('\n')) |line| {
                 var it = std.mem.splitScalar(u8, line, '\t');
@@ -183,7 +186,7 @@ fn parseContinuous(
                 // Check if the line matched the expected shape
                 if (col_count == col_num) {
                     // Append data and continue to next line
-                    try writer.appendRow(row_buf);
+                    try h5d.appendRow(row_buf);
                 } else {
                     if (std.mem.startsWith(u8, line, "# SCAN ")) break;
                     if (std.mem.startsWith(u8, line, "# STEP ")) break;
@@ -192,7 +195,9 @@ fn parseContinuous(
                 reader.toss(line.len + 1);
             } else |_| {}
 
-            try writer.flush();
+            // Write the buffered data to the hdf5 file
+            try h5d.flush();
+            if (!h5d.exists()) continue;
             // Write attributes to the dataset
             h5a.write(h5d.id()) catch {};
             // Create a shortcut link scan_idx/step_val pointing to scan_idx/by_idx/step_idx

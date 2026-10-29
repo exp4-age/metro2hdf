@@ -296,9 +296,12 @@ fn parseHits(
             // Create an empty chunked dataset at scan_idx/by_idx/step_idx/name
             const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, ch.name }, 0);
             defer allocator.free(path);
-            var h5d: hdf5.BufferedDset(f64) = try .create(h5f.id, path, 8, allocator, chunk_buf);
+            var h5d: hdf5.BufferedDset(f64) =
+                if (chunk_buf) |buf|
+                    .chunked(buf, path, 8, h5f.id)
+                else
+                    .allocating(allocator, path, 8, h5f.id);
             defer h5d.close();
-            var writer = h5d.writer();
 
             var size: i64 = 0;
             while (size < step.data_size) : (size += @sizeOf(Hit)) {
@@ -313,7 +316,7 @@ fn parseHits(
                 if (hit.channel == mcp_channel) {
                     // Append previous event to the dataset (the chunk buffer is
                     // automatically written to the hdf5 file when it is full)
-                    if (mask == filter) try writer.appendRow(&row_buf);
+                    if (mask == filter) try h5d.appendRow(&row_buf);
                     // Reset times and mask for the next event
                     row_buf = @splat(0);
                     mask = 0;
@@ -332,10 +335,10 @@ fn parseHits(
             }
 
             // Append the last event
-            if (mask == filter) try writer.appendRow(&row_buf);
-
+            if (mask == filter) try h5d.appendRow(&row_buf);
             // Write dataset
-            try writer.flush();
+            try h5d.flush();
+            if (!h5d.exists()) continue;
             // Write attributes to the dataset
             h5a.write(h5d.id()) catch {};
             // Create a shortcut link scan_idx/step_val pointing to scan_idx/by_idx/step_idx
