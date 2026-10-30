@@ -199,6 +199,15 @@ pub fn sortEvents(
                 }
             }
 
+            // Process the last event
+            if (e_count <= max_count and p_count <= max_count) {
+                if (e_count != 0 or p_count != 0) {
+                    const ev = &events[e_count][p_count];
+                    try ev.appendSlice(allocator, e_buf[0..e_count]);
+                    try ev.appendSlice(allocator, p_buf[0..p_count]);
+                }
+            }
+
             for (&events, 0..) |*row, i| {
                 for (row, 0..) |*ev, j| {
                     // Skip if no events where found for this category
