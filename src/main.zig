@@ -26,6 +26,8 @@ const usage =
     \\                                  the same run number, only the first
     \\                                  one is processed)
     \\      --replace                   overwrite existing files
+    \\      --chunk-size=BYTES          write datasets in chunks with given
+    \\                                  size, e.g. 100KiB
     \\
     \\HPTDC OPTIONS
     \\      --hptdc-rebuild-tables      force rebuild of step tables by
@@ -74,8 +76,8 @@ pub fn main(init: std.process.Init) !void {
 
     while (args.next()) |arg| {
         // Show usage if argument parsing fails
-        errdefer |err| {
-            std.log.err("could not parse argument '{s}': {t}", .{ arg, err });
+        errdefer {
+            std.log.err("could not parse argument '{s}'", .{arg});
             std.log.info("{s}", .{usage});
         }
 
@@ -97,6 +99,8 @@ pub fn main(init: std.process.Init) !void {
             short_names = true;
         } else if (std.mem.eql(u8, arg, "--replace")) {
             replace = true;
+        } else if (std.mem.startsWith(u8, arg, "--chunk-size=")) {
+            options.chunk_size = try std.fmt.parseIntSizeSuffix(arg[13..], 10);
         } else if (std.mem.eql(u8, arg, "--hptdc-rebuild-tables")) {
             options.hptdc_rebuild_tables = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {

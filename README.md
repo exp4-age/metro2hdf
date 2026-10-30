@@ -16,7 +16,7 @@ from the command line.
 ### Build with zig
 
 Alternatively, `metro2hdf` can be build from source with
-[zig](https://ziglang.org/download/) version 0.16.0:
+[zig](https://ziglang.org/download/) version 0.17.0:
 
 ```bash
 git clone https://github.com/exp4-age/metro2hdf.git
@@ -47,6 +47,8 @@ OUTPUT OPTIONS
                                   the same run number, only the first
                                   one is processed)
       --replace                   overwrite existing files
+      --chunk-size=BYTES          write datasets in chunks with given
+                                  size, e.g. 100KiB
 
 HPTDC OPTIONS
       --hptdc-rebuild-tables      force rebuild of step tables by
@@ -118,6 +120,22 @@ In case of a single measurement without steps this will look like this:
 |  |  |  ├─ 1E              <- points to the same dataset as "0/0.0/1E"
 |  |  |  ├─ ...
 ```
+
+### Chunked datasets
+
+The data can be parsed and written in chunks by specifying a chunk
+size with the argument `--chunk-size=BYTES`. The size can be given
+as a number or a number with a unit suffix, e.g. `10240` or `10KiB`.
+The chunking will apply to all continuous data streams.
+
+> ⚠️ In cases of large chunk sizes with many small datasets, this
+> will produce many partially empty chunks resulting in overly large
+> HDF5 files.
+
+This probably only makes sense for very large datasets, that can't
+be loaded into memory completely.
+
+> ⚠️ This is not available yet for coincidence events!
 
 ### Exclude channels
 
