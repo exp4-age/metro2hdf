@@ -16,7 +16,7 @@ from the command line.
 ### Build with zig
 
 Alternatively, `metro2hdf` can be build from source with
-[zig](https://ziglang.org/download/) version 0.16.0:
+[zig](https://ziglang.org/download/) version 0.17.0:
 
 ```bash
 git clone https://github.com/exp4-age/metro2hdf.git
