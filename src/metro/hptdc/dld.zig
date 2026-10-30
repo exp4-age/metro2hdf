@@ -44,9 +44,6 @@ pub fn sortEvents(
     const mcp_channel: u3 = options.hptdc_hit_mcp;
     // Events are filtered based on which channels triggered using a bit mask
     const filter = options.hptdc_hit_filter;
-    var mask: u8 = 0;
-    // Buffer for time signals of a single event
-    var row_buf: [8]f64 = @splat(0);
     // Allocate one reusable chunk buffer when chunking is enabled
     var chunk_buf: ?[]f64 = null;
     if (options.chunk_size != 0) {
@@ -72,6 +69,11 @@ pub fn sortEvents(
                 else
                     .allocating(allocator, path, 8, h5f.id);
             defer h5d.close();
+
+            // Buffer for time signals of a single event
+            var row_buf: [8]f64 = @splat(0);
+            // Mask for filtering
+            var mask: u8 = 0;
 
             var size: i64 = 0;
             while (size < step.data_size) : (size += @sizeOf(Hit)) {
