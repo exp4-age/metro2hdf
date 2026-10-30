@@ -212,6 +212,7 @@ pub fn main(init: std.process.Init) !void {
             else => {
                 std.log.warn("could not access '{s}': {t}", .{ filepath, err });
                 summary.skipped_files += 1;
+                continue;
             },
         }
 
