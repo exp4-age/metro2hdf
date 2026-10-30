@@ -35,7 +35,7 @@ pub fn Fixed(comptime T: type) type {
                 const rows = std.math.divExact(usize, buffer.len, shape) catch {
                     return error.ShapeMismatch;
                 };
-                const dims = [2]hdf5.hsize_t{@intCast(rows), shape};
+                const dims = [2]hdf5.hsize_t{ @intCast(rows), shape };
                 space_id = hdf5.H5Screate_simple(2, &dims, null);
             } else {
                 const dims = [1]hdf5.hsize_t{@intCast(buffer.len)};
@@ -71,7 +71,6 @@ pub fn Fixed(comptime T: type) type {
         }
     };
 }
-
 
 pub fn Buffered(comptime T: type) type {
     return struct {

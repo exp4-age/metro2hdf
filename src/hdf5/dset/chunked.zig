@@ -43,7 +43,7 @@ pub fn Chunked(comptime T: type) type {
             defer _ = hdf5.H5Pclose(dcpl_id);
             if (self.shape > 1) {
                 const chunk_rows: hdf5.hsize_t = @divFloor(self.buffer.len, self.shape);
-                const chunk = [2]hdf5.hsize_t{chunk_rows, self.shape};
+                const chunk = [2]hdf5.hsize_t{ chunk_rows, self.shape };
                 if (hdf5.H5Pset_chunk(dcpl_id, 2, &chunk) < 0) return error.DcplError;
             } else {
                 const chunk = [1]hdf5.hsize_t{self.buffer.len};
@@ -53,8 +53,8 @@ pub fn Chunked(comptime T: type) type {
             // Dataspace
             var space_id: hdf5.hid_t = -1;
             if (self.shape > 1) {
-                const dims = [2]hdf5.hsize_t{0, self.shape};
-                const maxdims = [2]hdf5.hsize_t{hdf5.H5S_UNLIMITED, self.shape};
+                const dims = [2]hdf5.hsize_t{ 0, self.shape };
+                const maxdims = [2]hdf5.hsize_t{ hdf5.H5S_UNLIMITED, self.shape };
                 space_id = hdf5.H5Screate_simple(2, &dims, &maxdims);
             } else {
                 const dims = [1]hdf5.hsize_t{0};
@@ -88,7 +88,7 @@ pub fn Chunked(comptime T: type) type {
             if (self.dset_id < 0) try self.create();
             if (self.shape > 1) {
                 try self.flush2d();
-            } else{
+            } else {
                 try self.flush1d();
             }
             // Reset count for next chunk
@@ -147,7 +147,7 @@ pub fn Chunked(comptime T: type) type {
 
             // Add the new chunk to the dimensions
             const row_count = std.math.divExact(usize, self.count, self.shape) catch return error.ShapeMismatch;
-            const new_dims = [2]hdf5.hsize_t{dims[0] + row_count, dims[1]};
+            const new_dims = [2]hdf5.hsize_t{ dims[0] + row_count, dims[1] };
 
             // Extend the dataset dimensions
             if (hdf5.H5Dset_extent(self.dset_id, &new_dims) < 0) return error.H5I_INVALID_HID;
@@ -156,8 +156,8 @@ pub fn Chunked(comptime T: type) type {
             defer _ = hdf5.H5Sclose(new_fspace_id);
 
             // Update the hyperslab selection
-            const start = [2]hdf5.hsize_t{dims[0], 0};
-            const count = [2]hdf5.hsize_t{row_count, dims[1]};
+            const start = [2]hdf5.hsize_t{ dims[0], 0 };
+            const count = [2]hdf5.hsize_t{ row_count, dims[1] };
             if (hdf5.H5Sselect_hyperslab(new_fspace_id, hdf5.H5S_SELECT_SET, &start, null, &count, null) < 0) {
                 return error.H5I_INVALID_HID;
             }

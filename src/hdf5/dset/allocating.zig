@@ -34,7 +34,7 @@ pub fn Allocating(comptime T: type) type {
         }
 
         pub fn flush(self: *Self) !void {
-            if (self.dset_id >= 0) return;
+            if (self.dset_id >= 0) return error.DsetAlreadyWritten;
             const buffer = self.data.items;
             if (buffer.len == 0) return;
 
@@ -55,7 +55,7 @@ pub fn Allocating(comptime T: type) type {
                 const rows = std.math.divExact(usize, buffer.len, self.shape) catch {
                     return error.ShapeMismatch;
                 };
-                const dims = [2]hdf5.hsize_t{@intCast(rows), self.shape};
+                const dims = [2]hdf5.hsize_t{ @intCast(rows), self.shape };
                 space_id = hdf5.H5Screate_simple(2, &dims, null);
             } else {
                 const dims = [1]hdf5.hsize_t{@intCast(buffer.len)};
@@ -81,7 +81,6 @@ pub fn Allocating(comptime T: type) type {
 
             self.dset_id = id;
         }
-
 
         pub fn close(self: *Self) void {
             self.data.deinit(self.allocator);

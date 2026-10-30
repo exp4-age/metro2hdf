@@ -135,6 +135,8 @@ The chunking will apply to all continuous data streams.
 This probably only makes sense for very large datasets, that can't
 be loaded into memory completely.
 
+> ⚠️ This is not available yet for coincidence events!
+
 ### Exclude channels
 
 Channels may be excluded by either listing the unwanted channels

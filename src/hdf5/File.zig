@@ -4,7 +4,6 @@ const std = @import("std");
 const hdf5 = @import("libhdf5");
 const Group = @import("Group.zig");
 
-
 id: hdf5.hid_t = -1,
 
 pub const OpenError = error{
