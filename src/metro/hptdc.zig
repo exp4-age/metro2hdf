@@ -30,13 +30,8 @@ pub fn parseChannel(
     // Check for HPTDC marker
     if (!std.mem.eql(u8, try reader.take(5), "HPTDC")) return error.CorruptedHeader;
 
-    // Starting in around October 2017, a reworked (and extendable)
-    // header format was introduced. We only support those newer
-    // versions: use the python version of metro2hdf for older versions
     const header_size = try reader.takeInt(i32, .little);
-    if (header_size > 4096) return error.UnsupportedVersion;
     if (header_size < 32) return error.CorruptedHeader;
-
     const version = try reader.takeInt(i32, .little);
 
     var mode: Mode = .HITS;
