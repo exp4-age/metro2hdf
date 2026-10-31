@@ -22,7 +22,22 @@ pub const LinkError = error{
 };
 
 pub fn create(path: [:0]const u8) OpenError!File {
-    const id = hdf5.H5Fcreate(path.ptr, hdf5.H5F_ACC_EXCL, hdf5.H5P_DEFAULT, hdf5.H5P_DEFAULT);
+    const fcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_FILE_CREATE());
+    if (fcpl < 0) return error.H5I_INVALID_HID;
+    defer _ = hdf5.H5Pclose(fcpl);
+    if (hdf5.H5Pset_shared_mesg_nindexes(fcpl, 1) < 0) return OpenError.H5I_INVALID_HID;
+    if (hdf5.H5Pset_shared_mesg_index(fcpl, 0, hdf5.H5O_SHMESG_ATTR_FLAG, 16) < 0) {
+        return OpenError.H5I_INVALID_HID;
+    }
+
+    const fapl = hdf5.H5Pcreate(hdf5.ZIG_H5P_FILE_ACCESS());
+    if (fapl < 0) return error.H5I_INVALID_HID;
+    defer _ = hdf5.H5Pclose(fapl);
+    if (hdf5.H5Pset_libver_bounds(fapl, hdf5.H5F_LIBVER_LATEST, hdf5.H5F_LIBVER_LATEST) < 0) {
+        return OpenError.H5I_INVALID_HID;
+    }
+
+    const id = hdf5.H5Fcreate(path.ptr, hdf5.H5F_ACC_EXCL, fcpl, fapl);
     if (id < 0) return OpenError.H5I_INVALID_HID;
     return .{ .id = id };
 }
