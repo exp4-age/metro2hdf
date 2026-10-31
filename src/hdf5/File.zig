@@ -49,6 +49,7 @@ pub fn createLink(self: *@This(), target: [:0]const u8, link: [:0]const u8) !voi
     // Create link creation property list for creation of intermediate groups
     const lcpl = hdf5.H5Pcreate(hdf5.ZIG_H5P_LINK_CREATE());
     if (lcpl < 0) return error.H5I_INVALID_HID;
+    defer _ = hdf5.H5Pclose(lcpl);
     if (hdf5.H5Pset_create_intermediate_group(lcpl, 1) < 0) return LinkError.H5I_INVALID_HID;
 
     // Create the link
