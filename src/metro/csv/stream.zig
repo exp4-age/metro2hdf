@@ -27,7 +27,8 @@ pub fn parse(
     defer if (chunk_buf) |buf| allocator.free(buf);
 
     while (try reader.takeDelimiter('\n')) |scan_marker| {
-        if (!std.mem.startsWith(u8, scan_marker, "# SCAN ")) continue;
+        // Search for a scan marker and parse the index
+        if (scan_marker.len < 8 or !std.mem.startsWith(u8, scan_marker, "# SCAN ")) continue;
         const scan_idx = std.fmt.parseInt(usize, scan_marker[7..], 10) catch continue;
 
         while (reader.peekDelimiterExclusive('\n')) |step_marker| {
@@ -35,11 +36,13 @@ pub fn parse(
             // advancing seek position
             if (std.mem.startsWith(u8, step_marker, "# SCAN ")) break;
             reader.toss(step_marker.len + 1);
-            if (!std.mem.startsWith(u8, step_marker, "# STEP ")) continue;
 
-            const idx = std.mem.findScalar(u8, step_marker, ':') orelse continue;
-            const step_idx = std.fmt.parseInt(usize, step_marker[7..idx], 10) catch continue;
-            const step_val = try allocator.dupeSentinel(u8, step_marker[idx + 2 ..], 0);
+            // Search for a step marker and parse the index and value
+            if (step_marker.len < 8 or !std.mem.startsWith(u8, step_marker, "# STEP ")) continue;
+            const mi = std.mem.findScalar(u8, step_marker, ':') orelse continue;
+            if (step_marker.len < mi + 3) continue;
+            const step_idx = std.fmt.parseInt(usize, step_marker[7..mi], 10) catch continue;
+            const step_val = try allocator.dupeSentinel(u8, step_marker[mi + 2 ..], 0);
             defer allocator.free(step_val);
 
             const path = try allocator.printSentinel("{d}/by_idx/{d}/{s}", .{ scan_idx, step_idx, name }, 0);
