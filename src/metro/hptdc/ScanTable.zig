@@ -166,7 +166,11 @@ fn rebuild_table(
                 data_size += @sizeOf(Datum);
             }
         } else |_| {
-            // EndOfStream or ReadFailed
+            // EndOfStream, check if there is more data
+            while (reader.peek(@sizeOf(Datum))) |_| {
+                reader.toss(@sizeOf(Datum));
+                data_size += @sizeOf(Datum);
+            } else |_| {}
             try step_table.append(null, @intCast(data_offset), @intCast(data_size));
         }
         // Append the step table
