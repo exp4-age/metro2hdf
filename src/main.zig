@@ -101,6 +101,10 @@ pub fn main(init: std.process.Init) !void {
             replace = true;
         } else if (std.mem.startsWith(u8, arg, "--chunk-size=")) {
             options.chunk_size = try std.fmt.parseIntSizeSuffix(arg[13..], 10);
+            if (options.chunk_size <= 1000) {
+                std.log.err("chunk size must be > {s}", .{ "1kB" });
+                return error.ChunkSizeTooSmall;
+            }
         } else if (std.mem.eql(u8, arg, "--hptdc-rebuild-tables")) {
             options.hptdc_rebuild_tables = true;
         } else if (std.mem.eql(u8, arg, "--hptdc-event-type=EP")) {
@@ -113,7 +117,10 @@ pub fn main(init: std.process.Init) !void {
             options.hptdc_hit_filter = try std.fmt.parseInt(u8, arg[19..], 2);
         } else if (std.mem.startsWith(u8, arg, "--hptdc-hit-mcp=")) {
             const channel = try std.fmt.parseInt(u64, arg[16..], 10);
-            if (channel > 7) return error.UnsupportedTdcChannel;
+            if (channel > 7) {
+                std.log.err("tdc channels > 7 are not supported", .{});
+                return error.UnsupportedTdcChannel;
+            }
             options.hptdc_hit_mcp = @intCast(channel);
         } else if (std.mem.eql(u8, arg, "--help")) {
             stdout_writer.writeAll(usage) catch {};
@@ -212,6 +219,7 @@ pub fn main(init: std.process.Init) !void {
             else => {
                 std.log.warn("could not access '{s}': {t}", .{ filepath, err });
                 summary.skipped_files += 1;
+                continue;
             },
         }
 

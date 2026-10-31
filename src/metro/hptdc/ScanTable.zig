@@ -34,15 +34,15 @@ pub fn parseOrRebuild(
     comptime Datum: type,
     file_reader: *std.Io.File.Reader,
 ) !void {
-    if (self.rebuild) {
-        try self.rebuild_table(Marker, Datum, file_reader);
+    if (self.rebuild or self.offset < 0 or self.size <= 0) {
+        try self.rebuildTable(Marker, Datum, file_reader);
     } else if (self.old_style) {
-        self.parse_table(i32, Datum, file_reader) catch {
-            try self.rebuild_table(Marker, Datum, file_reader);
+        self.parseTable(i32, Datum, file_reader) catch {
+            try self.rebuildTable(Marker, Datum, file_reader);
         };
     } else {
-        self.parse_table(i64, Datum, file_reader) catch {
-            try self.rebuild_table(Marker, Datum, file_reader);
+        self.parseTable(i64, Datum, file_reader) catch {
+            try self.rebuildTable(Marker, Datum, file_reader);
         };
     }
 }
@@ -51,12 +51,13 @@ fn append(self: *@This(), step_table: StepTable) !void {
     try self.scans.append(self.allocator, step_table);
 }
 
-fn parse_table(
+fn parseTable(
     self: *@This(),
     comptime Entry: type,
     comptime Datum: type,
     file_reader: *std.Io.File.Reader,
 ) !void {
+    const file_size = try file_reader.getSize();
     // Go to scan table start
     try file_reader.seekTo(@intCast(self.offset));
 
@@ -76,6 +77,7 @@ fn parse_table(
         while (step_idx < step_count) {
             const value = try reader.take(32);
             const data_offset = try reader.takeInt(Entry, .little);
+            if (data_offset < 0 or data_offset > file_size) return error.CorruptedStepTable;
             const data_size = try reader.takeInt(Entry, .little);
             if (data_size < 0 or @mod(data_size, @sizeOf(Datum)) != 0) {
                 return error.CorruptedStepTable;
@@ -89,7 +91,7 @@ fn parse_table(
     }
 }
 
-fn rebuild_table(
+fn rebuildTable(
     self: *@This(),
     comptime Marker: type,
     comptime Datum: type,
@@ -166,7 +168,11 @@ fn rebuild_table(
                 data_size += @sizeOf(Datum);
             }
         } else |_| {
-            // EndOfStream or ReadFailed
+            // EndOfStream, check if there is more data
+            while (reader.peek(@sizeOf(Datum))) |_| {
+                reader.toss(@sizeOf(Datum));
+                data_size += @sizeOf(Datum);
+            } else |_| {}
             try step_table.append(null, @intCast(data_offset), @intCast(data_size));
         }
         // Append the step table

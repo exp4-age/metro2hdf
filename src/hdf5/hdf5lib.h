@@ -14,3 +14,5 @@ hid_t ZIG_H5T_C_S1(void);
 // Property list macros
 hid_t ZIG_H5P_LINK_CREATE(void);
 hid_t ZIG_H5P_DATASET_CREATE(void);
+hid_t ZIG_H5P_FILE_CREATE(void);
+hid_t ZIG_H5P_FILE_ACCESS(void);

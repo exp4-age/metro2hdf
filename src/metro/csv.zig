@@ -24,8 +24,8 @@ pub fn parseChannel(
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
-    // Initialize the reader
-    const buf_size = 64 * 1024;
+    // Initialize the reader with 1MB
+    const buf_size = 1000000;
     var read_buffer: [buf_size]u8 = undefined;
     var file_reader = file.reader(io, &read_buffer);
     var reader = &file_reader.interface;
@@ -38,42 +38,52 @@ pub fn parseChannel(
     }
 
     // Create an attribute list
-    var h5a = try hdf5.AttrList.init(allocator);
+    var h5a: hdf5.AttrList = try .init(allocator);
     defer h5a.deinit();
 
     // Get the channel name
-    const name_marker = try reader.takeDelimiter('\n');
-    if (name_marker == null) return error.MissingAttribute;
-    if (!std.mem.startsWith(u8, name_marker.?, "# Name: ")) return error.MissingAttribute;
-    if (!std.mem.eql(u8, name_marker.?[8..], ch.name)) return error.ChannelMismatch;
-    try h5a.append("name", name_marker.?[8..]);
+    if (try reader.takeDelimiter('\n')) |marker| {
+        if (marker.len < 9 or !std.mem.startsWith(u8, marker, "# Name: ")) {
+            return error.MissingAttribute;
+        }
+        if (!std.mem.eql(u8, marker[8..], ch.name)) return error.ChannelMismatch;
+        try h5a.append("name", ch.name);
+    } else return error.CorruptedFile;
 
     // Get the hint
-    const hint_marker = try reader.takeDelimiter('\n');
-    if (hint_marker == null) return error.MissingAttribute;
-    if (!std.mem.startsWith(u8, hint_marker.?, "# Hint: ")) return error.MissingAttribute;
-    try h5a.append("hint", hint_marker.?[8..]);
+    if (try reader.takeDelimiter('\n')) |marker| {
+        if (marker.len < 9 or !std.mem.startsWith(u8, marker, "# Hint: ")) {
+            return error.MissingAttribute;
+        }
+        try h5a.append("hint", marker[8..]);
+    } else return error.CorruptedFile;
 
     // Get the frequency
-    const freq_marker = try reader.takeDelimiter('\n');
-    if (!std.mem.startsWith(u8, freq_marker.?, "# Frequency: ")) return error.MissingAttribute;
-    try h5a.append("freq", freq_marker.?[13..]);
-    const freq = Frequency.fromString(freq_marker.?[13..]);
+    var freq: Frequency = .unknown;
+    if (try reader.takeDelimiter('\n')) |marker| {
+        if (marker.len < 14 or !std.mem.startsWith(u8, marker, "# Frequency: ")) {
+            return error.MissingAttribute;
+        }
+        try h5a.append("freq", marker[13..]);
+        freq = .fromString(marker[13..]);
+    } else return error.CorruptedFile;
 
     // Get the shape
-    const shape_str = try reader.takeDelimiter('\n');
-    if (!std.mem.startsWith(u8, shape_str.?, "# Shape: ")) return error.MissingAttribute;
-    const shape = try std.fmt.parseInt(usize, shape_str.?[9..], 10);
+    var shape: usize = 0;
+    if (try reader.takeDelimiter('\n')) |marker| {
+        if (marker.len < 10 or !std.mem.startsWith(u8, marker, "# Shape: ")) {
+            return error.MissingAttribute;
+        }
+        shape = try std.fmt.parseInt(usize, marker[9..], 10);
+    } else return error.CorruptedFile;
 
     // Parse additional attributes if present
-    while (reader.peekDelimiterExclusive('\n')) |line| {
-        if (std.mem.find(u8, line, ":")) |idx| {
-            try h5a.append(line[2..idx], line[idx + 2 ..]);
-            reader.toss(line.len + 1);
+    while (reader.peekDelimiterExclusive('\n')) |marker| {
+        if (std.mem.find(u8, marker, ":")) |idx| {
+            if (marker.len > idx + 2) try h5a.append(marker[2..idx], marker[idx + 2 ..]);
+            reader.toss(marker.len + 1);
         } else break;
-    } else |err| {
-        return err;
-    }
+    } else |_| return error.CorruptedFile;
 
     switch (freq) {
         .continuous => {
