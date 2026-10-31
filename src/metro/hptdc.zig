@@ -18,8 +18,8 @@ pub fn parseChannel(
     allocator: std.mem.Allocator,
     options: metro.Options,
 ) !void {
-    // Initialize the reader
-    const buf_size = 64 * 1024;
+    // Initialize the reader with 1MB buffer
+    const buf_size = 1000000;
     var read_buffer: [buf_size]u8 = undefined;
     var file_reader = file.reader(io, &read_buffer);
     var reader = &file_reader.interface;
