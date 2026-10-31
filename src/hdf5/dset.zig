@@ -53,6 +53,7 @@ pub fn Fixed(comptime T: type) type {
             // Dataset
             const id = hdf5.H5Dcreate2(file_id, name, type_id, space_id, lcpl_id, dcpl_id, dapl_id);
             if (id < 0) return error.H5I_INVALID_HID;
+            errdefer _ = hdf5.H5Dclose(id);
 
             // Write the dataset
             const H5S_ALL = hdf5.H5S_ALL;

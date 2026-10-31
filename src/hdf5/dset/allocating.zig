@@ -69,17 +69,15 @@ pub fn Allocating(comptime T: type) type {
 
             // Dataset
             const type_id: hdf5.hid_t = getH5T(T);
-            const id = hdf5.H5Dcreate2(self.file_id, self.path, type_id, space_id, lcpl_id, dcpl_id, dapl_id);
-            if (id < 0) return error.H5I_INVALID_HID;
+            self.dset_id = hdf5.H5Dcreate2(self.file_id, self.path, type_id, space_id, lcpl_id, dcpl_id, dapl_id);
+            if (self.dset_id < 0) return error.H5I_INVALID_HID;
 
             // Write the dataset
             const H5S_ALL = hdf5.H5S_ALL;
             const H5P_DEFAULT = hdf5.H5P_DEFAULT;
-            if (hdf5.H5Dwrite(id, type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer.ptr) < 0) {
+            if (hdf5.H5Dwrite(self.dset_id, type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer.ptr) < 0) {
                 return error.WriteFailed;
             }
-
-            self.dset_id = id;
         }
 
         pub fn close(self: *Self) void {
